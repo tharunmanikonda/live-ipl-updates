@@ -36,6 +36,85 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Get matches for a specific date
+app.get('/cricket/date/:date', async (req, res) => {
+  const dateStr = req.params.date; // Format: YYYY-MM-DD
+
+  try {
+    const cached = getFromCache(`matches-${dateStr}`);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      return res.json(cached);
+    }
+
+    console.log(`[FETCHING] Matches for ${dateStr} from Cricbuzz`);
+
+    // Convert date to Cricbuzz format (e.g., 28-03-2026)
+    const [year, month, day] = dateStr.split('-');
+    const cricbuzzDate = `${day}-${month}-${year}`;
+
+    const response = await axios.get(`https://www.cricbuzz.com/cricket-match/schedule/${cricbuzzDate}`, {
+      headers: FETCH_HEADERS,
+      timeout: 10000,
+    });
+
+    const $ = cheerio.load(response.data);
+    const matches = [];
+
+    $('.cb-col-100.cb-col').each((index, element) => {
+      try {
+        const titleElement = $(element).find('.cb-lv-scr-mtch-hdr a');
+        const title = titleElement.text().trim();
+        const href = titleElement.attr('href');
+
+        if (!href || !title) return;
+
+        const matchIdMatch = href.match(/\/(\d+)\//);
+        const matchId = matchIdMatch ? matchIdMatch[1] : null;
+
+        if (!matchId) return;
+
+        const teams = [];
+        $(element).find('.cb-ovr-flo.cb-hmscg-tm-nm').each((i, teamEl) => {
+          const teamName = $(teamEl).text().trim();
+          const runElement = $(element).find('.cb-ovr-flo').filter(':not(.cb-hmscg-tm-nm)').eq(i);
+          const runs = runElement.text().trim().split(teamName).join('').trim();
+          teams.push({ name: teamName, score: runs });
+        });
+
+        const status = $(element).find('.cb-text-live').text().trim() ||
+                      $(element).find('.cb-text-complete').text().trim() ||
+                      $(element).find('.cb-text-schedule').text().trim() ||
+                      'Scheduled';
+
+        matches.push({
+          match_id: matchId,
+          match_title: title,
+          teams: teams,
+          status: status,
+          date: dateStr,
+          source: 'cricbuzz',
+        });
+      } catch (e) {
+        console.error('Error parsing match:', e.message);
+      }
+    });
+
+    const result = {
+      date: dateStr,
+      matches: matches,
+      timestamp: new Date().toISOString(),
+    };
+
+    setCache(`matches-${dateStr}`, result);
+    res.setHeader('X-Cache', 'MISS');
+    res.json(result);
+  } catch (error) {
+    console.error(`[ERROR] Date ${dateStr} fetch failed:`, error.message);
+    res.status(500).json({ error: `Failed to fetch matches for ${dateStr}: ${error.message}` });
+  }
+});
+
 // Get IPL matches specifically
 app.get('/cricket/ipl', async (req, res) => {
   try {
@@ -299,8 +378,10 @@ app.use((err, req, res, next) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`🏏 Cricbuzz proxy server running on port ${PORT}`);
-  console.log(`Health: http://localhost:${PORT}/health`);
-  console.log(`Live matches: GET http://localhost:${PORT}/cricket/live`);
-  console.log(`IPL 2026 matches: GET http://localhost:${PORT}/cricket/ipl`);
-  console.log(`Match details: GET http://localhost:${PORT}/cricket/match/{id}`);
+  console.log(`Endpoints:`);
+  console.log(`  Health: GET http://localhost:${PORT}/health`);
+  console.log(`  Live matches: GET http://localhost:${PORT}/cricket/live`);
+  console.log(`  IPL 2026: GET http://localhost:${PORT}/cricket/ipl`);
+  console.log(`  Date-specific: GET http://localhost:${PORT}/cricket/date/YYYY-MM-DD`);
+  console.log(`  Match details: GET http://localhost:${PORT}/cricket/match/{id}`);
 });
