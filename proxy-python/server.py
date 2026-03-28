@@ -91,49 +91,48 @@ def get_live_matches():
                               headers=HEADERS, timeout=10)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(response.text, 'lxml')
         matches = []
 
-        # Try multiple selector patterns for match elements
-        match_elements = soup.find_all('div', class_=re.compile(r'cb-col.*cb-col'))
+        # Use proven selectors from MCP server
+        container = soup.find('div', id='page-wrapper')
+        if container:
+            match_elements = container.find_all('div', class_='cb-mtch-lst')
 
-        for match_element in match_elements:
-            try:
-                # Try to find match link with various selectors
-                title_elem = match_element.find('a', class_=re.compile(r'.*mtch.*'))
-                if not title_elem:
-                    title_elem = match_element.find('a', href=re.compile(r'/live-cricket-scores/'))
+            for match_element in match_elements:
+                try:
+                    desc_tag = match_element.find('a', class_='text-hvr-underline')
+                    if not desc_tag:
+                        continue
 
-                if not title_elem:
+                    title = desc_tag.text.strip()
+                    if not title:
+                        continue
+
+                    href = desc_tag.get('href', '')
+
+                    # Extract match ID
+                    match_id_match = re.search(r'/(\d+)', href)
+                    if not match_id_match:
+                        continue
+
+                    match_id = match_id_match.group(1)
+
+                    # Get status if available
+                    status_elem = match_element.find('div', class_=re.compile(r'cb-text-(live|complete)'))
+                    status = status_elem.text.strip() if status_elem else 'Live'
+
+                    matches.append({
+                        'match_id': match_id,
+                        'title': title,
+                        'url': 'https://www.cricbuzz.com' + href if href else '',
+                        'status': status,
+                        'source': 'cricbuzz'
+                    })
+
+                except Exception as e:
+                    logger.debug(f'Error parsing match: {str(e)}')
                     continue
-
-                title = title_elem.text.strip()
-                if not title or len(title) < 3:
-                    continue
-
-                href = title_elem.get('href', '')
-
-                # Extract match ID
-                match_id_match = re.search(r'/(\d+)', href)
-                if not match_id_match:
-                    continue
-
-                match_id = match_id_match.group(1)
-
-                # Get status
-                status_elem = match_element.find('div', class_=re.compile(r'cb-text-(live|complete)'))
-                status = status_elem.text.strip() if status_elem else 'Scheduled'
-
-                matches.append({
-                    'match_id': match_id,
-                    'title': title,
-                    'status': status,
-                    'source': 'cricbuzz'
-                })
-
-            except Exception as e:
-                logger.debug(f'Error parsing match: {str(e)}')
-                continue
 
         result = {
             'matches': matches,
@@ -150,7 +149,7 @@ def get_live_matches():
 
 @app.route('/cricket/ipl', methods=['GET'])
 def get_ipl_matches():
-    """Get IPL 2026 matches"""
+    """Get IPL 2026 matches - uses same selectors as live matches but filtered"""
     cached = get_from_cache('ipl-matches')
     if cached:
         return jsonify({**cached, 'cache': 'HIT'})
@@ -161,49 +160,49 @@ def get_ipl_matches():
                               headers=HEADERS, timeout=10)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(response.text, 'lxml')
         matches = []
 
-        # Try multiple selector patterns
-        match_elements = soup.find_all('div', class_=re.compile(r'cb-col.*cb-col'))
+        # Use proven selectors from MCP server
+        container = soup.find('div', id='page-wrapper')
+        if container:
+            match_elements = container.find_all('div', class_='cb-mtch-lst')
 
-        for match_element in match_elements:
-            try:
-                # Find match link
-                title_elem = match_element.find('a', class_=re.compile(r'.*mtch.*'))
-                if not title_elem:
-                    title_elem = match_element.find('a', href=re.compile(r'/live-cricket-scores/'))
+            for match_element in match_elements:
+                try:
+                    desc_tag = match_element.find('a', class_='text-hvr-underline')
+                    if not desc_tag:
+                        continue
 
-                if not title_elem:
+                    title = desc_tag.text.strip()
+                    if not title or 'IPL' not in title:
+                        continue
+
+                    href = desc_tag.get('href', '')
+
+                    # Extract match ID
+                    match_id_match = re.search(r'/(\d+)', href)
+                    if not match_id_match:
+                        continue
+
+                    match_id = match_id_match.group(1)
+
+                    # Get status
+                    status_elem = match_element.find('div', class_=re.compile(r'cb-text-(live|complete)'))
+                    status = status_elem.text.strip() if status_elem else 'Scheduled'
+
+                    matches.append({
+                        'match_id': match_id,
+                        'title': title,
+                        'url': 'https://www.cricbuzz.com' + href if href else '',
+                        'status': status,
+                        'series': 'IPL 2026',
+                        'source': 'cricbuzz'
+                    })
+
+                except Exception as e:
+                    logger.debug(f'Error parsing IPL match: {str(e)}')
                     continue
-
-                title = title_elem.text.strip()
-                if not title or 'IPL' not in title:
-                    continue
-
-                href = title_elem.get('href', '')
-
-                match_id_match = re.search(r'/(\d+)', href)
-                if not match_id_match:
-                    continue
-
-                match_id = match_id_match.group(1)
-
-                # Get status
-                status_elem = match_element.find('div', class_=re.compile(r'cb-text-(live|complete|schedule)'))
-                status = status_elem.text.strip() if status_elem else 'Scheduled'
-
-                matches.append({
-                    'match_id': match_id,
-                    'title': title,
-                    'status': status,
-                    'series': 'IPL 2026',
-                    'source': 'cricbuzz'
-                })
-
-            except Exception as e:
-                logger.debug(f'Error parsing IPL match: {str(e)}')
-                continue
 
         result = {
             'matches': matches,
