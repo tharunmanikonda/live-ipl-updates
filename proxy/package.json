@@ -1,7 +1,7 @@
 {
   "name": "cricket-proxy",
   "version": "1.0.0",
-  "description": "Cricket live score proxy for ESPNcricinfo",
+  "description": "Cricket live score proxy scraping Cricbuzz",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,9 +12,10 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "node-fetch": "^2.7.0"
+    "axios": "^1.6.5",
+    "cheerio": "^1.0.0-rc.12"
   },
-  "keywords": ["cricket", "proxy", "espncricinfo"],
+  "keywords": ["cricket", "proxy", "cricbuzz", "scraper"],
   "author": "",
   "license": "MIT"
 }

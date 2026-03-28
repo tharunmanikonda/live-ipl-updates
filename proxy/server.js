@@ -1,130 +1,226 @@
 const express = require('express');
-const fetch = require('node-fetch');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Headers to look human to ESPNcricinfo
+// Headers to look human to Cricbuzz
 const FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Referer': 'https://www.espncricinfo.com/',
-  'Origin': 'https://www.espncricinfo.com',
-  'Accept': 'application/json',
+  'Referer': 'https://www.cricbuzz.com/',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'same-origin',
-  'Cache-Control': 'no-cache',
-  'DNT': '1',
+  'Accept-Encoding': 'gzip, deflate',
   'Connection': 'keep-alive',
 };
 
-// Simple in-memory cache (auto-clears every 60 seconds)
+// Cache for 60 seconds
 const cache = {};
-const CACHE_TTL = 60000; // 60 seconds
+const CACHE_TTL = 60000;
 
-function getCacheKey(url) {
-  return `cache:${url}`;
-}
-
-function getFromCache(url) {
-  const key = getCacheKey(url);
-  const cached = cache[key];
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
+function getFromCache(key) {
+  if (cache[key] && Date.now() - cache[key].timestamp < CACHE_TTL) {
+    return cache[key].data;
   }
   delete cache[key];
   return null;
 }
 
-function setCache(url, data) {
-  const key = getCacheKey(url);
-  cache[key] = {
-    data,
-    timestamp: Date.now(),
-  };
+function setCache(key, data) {
+  cache[key] = { data, timestamp: Date.now() };
 }
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Proxy endpoint for live matches
+// Get live matches from Cricbuzz
 app.get('/cricket/live', async (req, res) => {
-  const url = 'https://www.espncricinfo.com/matches/engine/match/live.json';
-
   try {
-    // Check cache first
-    const cached = getFromCache(url);
+    const cached = getFromCache('live-matches');
     if (cached) {
-      console.log('[CACHE HIT] Live matches');
       res.setHeader('X-Cache', 'HIT');
       return res.json(cached);
     }
 
-    console.log('[FETCHING] Live matches from ESPNcricinfo');
-    const response = await fetch(url, {
+    console.log('[FETCHING] Live matches from Cricbuzz');
+    const response = await axios.get('https://www.cricbuzz.com/cricket-match/live-scores', {
       headers: FETCH_HEADERS,
       timeout: 10000,
     });
 
-    if (!response.ok) {
-      console.error(`[ERROR] ESPNcricinfo returned ${response.status}`);
-      return res.status(response.status).json({
-        error: `ESPNcricinfo returned ${response.status}`,
-      });
-    }
+    const $ = cheerio.load(response.data);
+    const matches = [];
 
-    const data = await response.json();
-    setCache(url, data);
+    // Extract live matches from Cricbuzz
+    $('.cb-col-100.cb-col').each((index, element) => {
+      try {
+        const titleElement = $(element).find('.cb-lv-scr-mtch-hdr a');
+        const title = titleElement.text().trim();
+        const href = titleElement.attr('href');
+
+        if (!href) return;
+
+        // Extract match ID from href like: /live-cricket-scores/1234567/
+        const matchIdMatch = href.match(/\/(\d+)\//);
+        const matchId = matchIdMatch ? matchIdMatch[1] : null;
+
+        if (!matchId || !title) return;
+
+        // Extract teams and scores
+        const teams = [];
+        $(element).find('.cb-ovr-flo.cb-hmscg-tm-nm').each((i, teamEl) => {
+          const teamName = $(teamEl).text().trim();
+          const runElement = $(element).find('.cb-ovr-flo').filter(':not(.cb-hmscg-tm-nm)').eq(i);
+          const runs = runElement.text().trim().split(teamName).join('').trim();
+
+          teams.push({
+            name: teamName,
+            score: runs,
+          });
+        });
+
+        // Check if match is live or upcoming
+        const status = $(element).find('.cb-text-live').text().trim() ||
+                      $(element).find('.cb-text-complete').text().trim() ||
+                      'Upcoming';
+
+        // Get series/tournament name from title
+        const seriesMatch = title.match(/,\s*([^,]+)$/);
+        const series = seriesMatch ? seriesMatch[1].trim() : 'IPL';
+
+        matches.push({
+          match_id: matchId,
+          match_title: title,
+          teams: teams,
+          status: status,
+          series: {
+            name: series,
+          },
+          source: 'cricbuzz',
+        });
+      } catch (e) {
+        console.error('Error parsing match:', e.message);
+      }
+    });
+
+    // Convert to ESPNcricinfo-like format for compatibility
+    const result = {
+      matches: matches,
+      timestamp: new Date().toISOString(),
+    };
+
+    setCache('live-matches', result);
     res.setHeader('X-Cache', 'MISS');
-    res.json(data);
+    res.json(result);
   } catch (error) {
-    console.error('[ERROR]', error.message);
-    res.status(500).json({ error: error.message });
+    console.error('[ERROR] Cricbuzz fetch failed:', error.message);
+    res.status(500).json({ error: `Failed to fetch from Cricbuzz: ${error.message}` });
   }
 });
 
-// Proxy endpoint for specific match
+// Get specific match details from Cricbuzz
 app.get('/cricket/match/:id', async (req, res) => {
   const matchId = req.params.id;
-  const url = `https://www.espncricinfo.com/matches/engine/match/${matchId}/live.json`;
 
   try {
-    // Check cache first
-    const cached = getFromCache(url);
+    const cached = getFromCache(`match-${matchId}`);
     if (cached) {
-      console.log(`[CACHE HIT] Match ${matchId}`);
       res.setHeader('X-Cache', 'HIT');
       return res.json(cached);
     }
 
-    console.log(`[FETCHING] Match ${matchId} from ESPNcricinfo`);
-    const response = await fetch(url, {
+    console.log(`[FETCHING] Match ${matchId} from Cricbuzz`);
+    const matchUrl = `https://www.cricbuzz.com/live-cricket-scores/${matchId}`;
+    const response = await axios.get(matchUrl, {
       headers: FETCH_HEADERS,
       timeout: 10000,
     });
 
-    if (!response.ok) {
-      console.error(`[ERROR] ESPNcricinfo returned ${response.status} for match ${matchId}`);
-      return res.status(response.status).json({
-        error: `ESPNcricinfo returned ${response.status}`,
-      });
+    const $ = cheerio.load(response.data);
+
+    // Extract match title
+    const title = $('.cb-nav-hdr.cb-font-18').text().trim().replace(', Commentary', '');
+
+    // Extract live score
+    const liveScore = $('.cb-font-20.text-bold').text().trim();
+
+    // Extract match status/update
+    const update = $('.cb-col.cb-col-100.cb-min-stts.cb-text-complete').text().trim() ||
+                  $('.cb-text-inprogress').text().trim() ||
+                  $('.cb-text-stumps').text().trim() ||
+                  'Match Update';
+
+    // Extract current run rate
+    const runRate = $('.cb-font-12.cb-text-gray').first().text().trim();
+
+    // Extract batsmen
+    const batsmanOne = {
+      name: $('.cb-col.cb-col-50').eq(1).text().trim(),
+      runs: $('.cb-col.cb-col-10.ab.text-right').eq(0).text().trim(),
+      balls: $('.cb-col.cb-col-10.ab.text-right').eq(1).text().trim(),
+    };
+
+    const batsmanTwo = {
+      name: $('.cb-col.cb-col-50').eq(2).text().trim(),
+      runs: $('.cb-col.cb-col-10.ab.text-right').eq(2).text().trim(),
+      balls: $('.cb-col.cb-col-10.ab.text-right').eq(3).text().trim(),
+    };
+
+    // Extract bowlers
+    const bowlerOne = {
+      name: $('.cb-col.cb-col-50').eq(4).text().trim(),
+      overs: $('.cb-col.cb-col-10.text-right').eq(4).text().trim(),
+      runs: $('.cb-col.cb-col-10.text-right').eq(5).text().trim(),
+      wickets: $('.cb-col.cb-col-8.text-right').eq(5).text().trim(),
+    };
+
+    const bowlerTwo = {
+      name: $('.cb-col.cb-col-50').eq(5).text().trim(),
+      overs: $('.cb-col.cb-col-10.text-right').eq(6).text().trim(),
+      runs: $('.cb-col.cb-col-10.text-right').eq(7).text().trim(),
+      wickets: $('.cb-col.cb-col-8.text-right').eq(7).text().trim(),
+    };
+
+    // Extract commentary (last event)
+    let commentary = 'No commentary yet';
+    const commentElements = $('.cb-col-75.cb-lv-scrs-cmntry-txt');
+    if (commentElements.length > 0) {
+      commentary = commentElements.first().text().trim();
     }
 
-    const data = await response.json();
-    setCache(url, data);
+    const result = {
+      match_id: matchId,
+      match: title,
+      title: title,
+      status: update,
+      liveScore: liveScore,
+      runRate: runRate,
+      batsmen: {
+        one: batsmanOne,
+        two: batsmanTwo,
+      },
+      bowlers: {
+        one: bowlerOne,
+        two: bowlerTwo,
+      },
+      commentary: commentary,
+      timestamp: new Date().toISOString(),
+      source: 'cricbuzz',
+    };
+
+    setCache(`match-${matchId}`, result);
     res.setHeader('X-Cache', 'MISS');
-    res.json(data);
+    res.json(result);
   } catch (error) {
-    console.error(`[ERROR] Match ${matchId}:`, error.message);
-    res.status(500).json({ error: error.message });
+    console.error(`[ERROR] Match ${matchId} fetch failed:`, error.message);
+    res.status(500).json({ error: `Failed to fetch match: ${error.message}` });
   }
 });
 
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('[UNHANDLED ERROR]', err);
   res.status(500).json({ error: 'Internal server error' });
@@ -132,8 +228,8 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🏏 Cricket proxy server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`🏏 Cricbuzz proxy server running on port ${PORT}`);
+  console.log(`Health: http://localhost:${PORT}/health`);
   console.log(`Live matches: GET http://localhost:${PORT}/cricket/live`);
   console.log(`Match details: GET http://localhost:${PORT}/cricket/match/{id}`);
 });
