@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
-import json
+import re
 from datetime import datetime
 import logging
 
@@ -39,6 +39,45 @@ def set_cache(key, data):
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
 
+@app.route('/cricket/debug', methods=['GET'])
+def debug():
+    """Debug endpoint - shows HTML structure from Cricbuzz"""
+    url = request.args.get('url', 'https://www.cricbuzz.com/cricket-match/ipl-2026')
+    try:
+        logger.info(f'[DEBUG] Fetching {url}')
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Try multiple selector patterns
+        selectors_to_try = [
+            ('div', {'class_': 'cb-col-100 cb-col'}),
+            ('div', {'class_': 'cb-scrd-itm'}),
+            ('div', {'class_': 'cb-match-item'}),
+            ('div', {'class_': 'cb-schedules-list-item'}),
+        ]
+
+        debug_info = {
+            'url': url,
+            'page_title': soup.title.string if soup.title else 'No title',
+            'selectors_found': {}
+        }
+
+        for tag, attrs in selectors_to_try:
+            elements = soup.find_all(tag, attrs)
+            debug_info['selectors_found'][str(attrs)] = len(elements)
+            if elements and len(elements) > 0:
+                debug_info['first_match_html'] = str(elements[0])[:800]
+
+        # Also check for any match-like divs
+        all_divs = soup.find_all('div')
+        debug_info['total_divs'] = len(all_divs)
+
+        return jsonify(debug_info)
+    except Exception as e:
+        return jsonify({'error': str(e), 'url': url}), 500
+
 @app.route('/cricket/live', methods=['GET'])
 def get_live_matches():
     """Get live cricket matches from Cricbuzz"""
@@ -55,60 +94,59 @@ def get_live_matches():
         soup = BeautifulSoup(response.text, 'html.parser')
         matches = []
 
-        # Find all match containers
-        for match_element in soup.find_all('div', class_='cb-col-100 cb-col'):
+        # Try multiple selector patterns for match elements
+        match_elements = soup.find_all('div', class_=re.compile(r'cb-col.*cb-col'))
+
+        for match_element in match_elements:
             try:
-                # Get match title and ID
-                title_elem = match_element.find('a', class_='cb-lv-scr-mtch-hdr')
+                # Try to find match link with various selectors
+                title_elem = match_element.find('a', class_=re.compile(r'.*mtch.*'))
+                if not title_elem:
+                    title_elem = match_element.find('a', href=re.compile(r'/live-cricket-scores/'))
+
                 if not title_elem:
                     continue
 
                 title = title_elem.text.strip()
+                if not title or len(title) < 3:
+                    continue
+
                 href = title_elem.get('href', '')
 
                 # Extract match ID
-                import re
-                match_id_match = re.search(r'/(\d+)/', href)
+                match_id_match = re.search(r'/(\d+)', href)
                 if not match_id_match:
                     continue
 
                 match_id = match_id_match.group(1)
 
-                # Get teams and scores
-                teams = []
-                team_elements = match_element.find_all('div', class_='cb-ovr-flo cb-hmscg-tm-nm')
-                for i, team_elem in enumerate(team_elements):
-                    team_name = team_elem.text.strip()
-                    teams.append({'name': team_name, 'score': ''})
-
                 # Get status
-                status_elem = match_element.find('div', class_='cb-text-live')
-                if not status_elem:
-                    status_elem = match_element.find('div', class_='cb-text-complete')
+                status_elem = match_element.find('div', class_=re.compile(r'cb-text-(live|complete)'))
                 status = status_elem.text.strip() if status_elem else 'Scheduled'
 
                 matches.append({
                     'match_id': match_id,
                     'title': title,
-                    'teams': teams,
                     'status': status,
                     'source': 'cricbuzz'
                 })
+
             except Exception as e:
-                logger.error(f'Error parsing match: {str(e)}')
+                logger.debug(f'Error parsing match: {str(e)}')
                 continue
 
         result = {
             'matches': matches,
             'timestamp': datetime.now().isoformat(),
-            'cache': 'MISS'
+            'cache': 'MISS',
+            'count': len(matches)
         }
         set_cache('live-matches', result)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f'Error fetching live matches: {str(e)}')
-        return jsonify({'error': f'Failed to fetch live matches: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to fetch live matches: {str(e)}', 'matches': []}), 500
 
 @app.route('/cricket/ipl', methods=['GET'])
 def get_ipl_matches():
@@ -126,55 +164,59 @@ def get_ipl_matches():
         soup = BeautifulSoup(response.text, 'html.parser')
         matches = []
 
-        for match_element in soup.find_all('div', class_='cb-col-100 cb-col'):
+        # Try multiple selector patterns
+        match_elements = soup.find_all('div', class_=re.compile(r'cb-col.*cb-col'))
+
+        for match_element in match_elements:
             try:
-                title_elem = match_element.find('a', class_='cb-lv-scr-mtch-hdr')
-                if not title_elem or 'IPL' not in title_elem.text:
+                # Find match link
+                title_elem = match_element.find('a', class_=re.compile(r'.*mtch.*'))
+                if not title_elem:
+                    title_elem = match_element.find('a', href=re.compile(r'/live-cricket-scores/'))
+
+                if not title_elem:
                     continue
 
                 title = title_elem.text.strip()
+                if not title or 'IPL' not in title:
+                    continue
+
                 href = title_elem.get('href', '')
 
-                import re
-                match_id_match = re.search(r'/(\d+)/', href)
+                match_id_match = re.search(r'/(\d+)', href)
                 if not match_id_match:
                     continue
 
                 match_id = match_id_match.group(1)
 
-                teams = []
-                team_elements = match_element.find_all('div', class_='cb-ovr-flo cb-hmscg-tm-nm')
-                for team_elem in team_elements:
-                    teams.append({'name': team_elem.text.strip()})
-
-                status_elem = match_element.find('div', class_='cb-text-live')
-                if not status_elem:
-                    status_elem = match_element.find('div', class_='cb-text-complete')
-                status = status_elem.text.strip() if status_elem else 'Upcoming'
+                # Get status
+                status_elem = match_element.find('div', class_=re.compile(r'cb-text-(live|complete|schedule)'))
+                status = status_elem.text.strip() if status_elem else 'Scheduled'
 
                 matches.append({
                     'match_id': match_id,
                     'title': title,
-                    'teams': teams,
                     'status': status,
                     'series': 'IPL 2026',
                     'source': 'cricbuzz'
                 })
+
             except Exception as e:
-                logger.error(f'Error parsing IPL match: {str(e)}')
+                logger.debug(f'Error parsing IPL match: {str(e)}')
                 continue
 
         result = {
             'matches': matches,
             'timestamp': datetime.now().isoformat(),
-            'cache': 'MISS'
+            'cache': 'MISS',
+            'count': len(matches)
         }
         set_cache('ipl-matches', result)
         return jsonify(result)
 
     except Exception as e:
         logger.error(f'Error fetching IPL matches: {str(e)}')
-        return jsonify({'error': f'Failed to fetch IPL matches: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to fetch IPL matches: {str(e)}', 'matches': []}), 500
 
 @app.route('/cricket/match/<match_id>', methods=['GET'])
 def get_match_details(match_id):
@@ -185,24 +227,19 @@ def get_match_details(match_id):
 
     try:
         logger.info(f'[FETCHING] Match {match_id} details')
-        url = f'https://www.cricbuzz.com/live-cricket-scorecard/{match_id}'
+        url = f'https://www.cricbuzz.com/live-cricket-scores/{match_id}'
         response = requests.get(url, headers=HEADERS, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Extract title
-        title_elem = soup.find('div', class_='cb-nav-hdr cb-font-18')
-        title = title_elem.text.strip().replace(', Commentary', '') if title_elem else 'Match'
-
-        # Extract live score
-        score_elem = soup.find('div', class_='cb-font-20 text-bold')
-        live_score = score_elem.text.strip() if score_elem else 'N/A'
+        title_elem = soup.find('h1')
+        title = title_elem.text.strip() if title_elem else 'Match'
 
         result = {
             'match_id': match_id,
             'title': title,
-            'score': live_score,
             'timestamp': datetime.now().isoformat(),
             'cache': 'MISS'
         }
