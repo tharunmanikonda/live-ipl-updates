@@ -36,6 +36,76 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Get IPL matches specifically
+app.get('/cricket/ipl', async (req, res) => {
+  try {
+    const cached = getFromCache('ipl-matches');
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      return res.json(cached);
+    }
+
+    console.log('[FETCHING] IPL 2026 matches from Cricbuzz');
+    const response = await axios.get('https://www.cricbuzz.com/cricket-match/ipl-2026', {
+      headers: FETCH_HEADERS,
+      timeout: 10000,
+    });
+
+    const $ = cheerio.load(response.data);
+    const matches = [];
+
+    $('.cb-col-100.cb-col').each((index, element) => {
+      try {
+        const titleElement = $(element).find('.cb-lv-scr-mtch-hdr a');
+        const title = titleElement.text().trim();
+        const href = titleElement.attr('href');
+
+        if (!href || !title) return;
+
+        const matchIdMatch = href.match(/\/(\d+)\//);
+        const matchId = matchIdMatch ? matchIdMatch[1] : null;
+
+        if (!matchId) return;
+
+        const teams = [];
+        $(element).find('.cb-ovr-flo.cb-hmscg-tm-nm').each((i, teamEl) => {
+          const teamName = $(teamEl).text().trim();
+          const runElement = $(element).find('.cb-ovr-flo').filter(':not(.cb-hmscg-tm-nm)').eq(i);
+          const runs = runElement.text().trim().split(teamName).join('').trim();
+          teams.push({ name: teamName, score: runs });
+        });
+
+        const status = $(element).find('.cb-text-live').text().trim() ||
+                      $(element).find('.cb-text-complete').text().trim() ||
+                      'Upcoming';
+
+        matches.push({
+          match_id: matchId,
+          match_title: title,
+          teams: teams,
+          status: status,
+          series: { name: 'IPL 2026' },
+          source: 'cricbuzz',
+        });
+      } catch (e) {
+        console.error('Error parsing IPL match:', e.message);
+      }
+    });
+
+    const result = {
+      matches: matches,
+      timestamp: new Date().toISOString(),
+    };
+
+    setCache('ipl-matches', result);
+    res.setHeader('X-Cache', 'MISS');
+    res.json(result);
+  } catch (error) {
+    console.error('[ERROR] IPL matches fetch failed:', error.message);
+    res.status(500).json({ error: `Failed to fetch IPL matches: ${error.message}` });
+  }
+});
+
 // Get live matches from Cricbuzz
 app.get('/cricket/live', async (req, res) => {
   try {
@@ -231,5 +301,6 @@ app.listen(PORT, () => {
   console.log(`🏏 Cricbuzz proxy server running on port ${PORT}`);
   console.log(`Health: http://localhost:${PORT}/health`);
   console.log(`Live matches: GET http://localhost:${PORT}/cricket/live`);
+  console.log(`IPL 2026 matches: GET http://localhost:${PORT}/cricket/ipl`);
   console.log(`Match details: GET http://localhost:${PORT}/cricket/match/{id}`);
 });
