@@ -149,14 +149,15 @@ def get_live_matches():
 
 @app.route('/cricket/ipl', methods=['GET'])
 def get_ipl_matches():
-    """Get IPL 2026 matches - uses same selectors as live matches but filtered"""
+    """Get IPL 2026 matches from official URL"""
     cached = get_from_cache('ipl-matches')
     if cached:
         return jsonify({**cached, 'cache': 'HIT'})
 
     try:
         logger.info('[FETCHING] IPL 2026 matches from Cricbuzz')
-        response = requests.get('https://www.cricbuzz.com/cricket-match/ipl-2026',
+        # Use official IPL 2026 URL
+        response = requests.get('https://www.cricbuzz.com/cricket-series/9241/indian-premier-league-2026/matches',
                               headers=HEADERS, timeout=10)
         response.raise_for_status()
 
@@ -175,7 +176,7 @@ def get_ipl_matches():
                         continue
 
                     title = desc_tag.text.strip()
-                    if not title or 'IPL' not in title:
+                    if not title:
                         continue
 
                     href = desc_tag.get('href', '')
