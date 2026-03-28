@@ -1,0 +1,28 @@
+name = "cricket-live-worker"
+main = "index.js"
+compatibility_date = "2024-11-21"
+
+# Default environment variables
+vars = {
+  TOURNAMENT_FILTER = "IPL",
+  PROXY_URL = "https://cricket-proxy-production.up.railway.app"
+}
+
+# KV namespace bindings
+[[kv_namespaces]]
+binding = "CRICKET_STATE"
+id = "90d8484705f14336bb993573abf5c549"
+
+# Cron trigger - every 1 minute (Cloudflare free tier limit)
+[triggers]
+crons = ["*/1 * * * *"]
+
+# Secrets (set via `wrangler secret put`)
+# POKE_WEBHOOK_URL - Your Poke recipe's webhook endpoint
+#   When you create a recipe on Poke with a webhook trigger,
+#   Poke gives you a unique webhook URL. Paste that URL here.
+#   Example: https://poke.delivery/webhooks/12345abcde
+
+# To configure:
+# wrangler secret put POKE_WEBHOOK_URL
+# Then paste your Poke webhook URL
