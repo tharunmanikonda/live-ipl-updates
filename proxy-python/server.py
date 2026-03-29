@@ -50,6 +50,39 @@ def set_cache(key, data):
         'timestamp': datetime.now().timestamp()
     }
 
+def check_match_status_from_api(match_id):
+    """
+    Check Cricbuzz API to see if match has ended.
+    Returns: 'live', 'completed', or 'unknown'
+    """
+    try:
+        # Try commentary API to check for match-end indicators
+        url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
+        resp = requests.get(url, headers=HEADERS, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+
+            # Check various status indicators in the API response
+            match_info = data.get('matchInfo', {})
+            status = match_info.get('matchState', '').lower()
+
+            if 'completed' in status or 'ended' in status or 'finished' in status:
+                return 'completed'
+            if 'live' in status or 'ongoing' in status or 'in progress' in status:
+                return 'live'
+
+            # Fallback: check recent commentary for match-end indicators
+            recent_comm = data.get('recentComm', [])
+            if recent_comm:
+                recent_text = ' '.join([c.get('commText', '').lower() for c in recent_comm[:5]])
+                if 'match' in recent_text and any(x in recent_text for x in ['won', 'ended', 'finished']):
+                    return 'completed'
+
+        return 'unknown'
+    except Exception as e:
+        logger.debug(f'[API] Error checking match status: {str(e)}')
+        return 'unknown'
+
 def send_webhook_event(match_id, event_type, event_data):
     """Send webhook event to all subscribed webhooks for a match"""
     match_webhooks = webhooks.get(match_id, [])
@@ -149,6 +182,16 @@ def poll_live_matches():
             # This match is already confirmed to have webhooks and be marked live
 
             logger.info(f'[POLL] Checking match {match_id} for new events...')
+
+            # 🔍 CHECK MATCH STATUS FROM API
+            api_status = check_match_status_from_api(match_id)
+            if api_status == 'completed':
+                logger.info(f'[AUTO] 🏁 Match {match_id} detected as COMPLETED via API')
+                with state_lock:
+                    if match_id in matches_schedule:
+                        matches_schedule[match_id]['status'] = 'completed'
+                        logger.info(f'[AUTO] Polling will STOP for this match')
+                        continue  # Skip polling this match
 
             # Get ball-by-ball commentary with smart timestamp tracking
             try:
@@ -275,6 +318,13 @@ def poll_live_matches():
                             'commentary': ball['text'][:500]
                         })
                         logger.info(f'[POLL] Detected match end')
+
+                        # ✅ AUTO-MARK MATCH AS COMPLETED (no manual update needed)
+                        with state_lock:
+                            if match_id in matches_schedule:
+                                matches_schedule[match_id]['status'] = 'completed'
+                                logger.info(f'[AUTO] 🏁 Match {match_id} auto-marked as COMPLETED')
+                                logger.info(f'[AUTO] Polling will now STOP for this match')
 
             except Exception as e:
                 logger.error(f'[POLL] Error processing match {match_id}: {str(e)}')
@@ -1397,6 +1447,37 @@ def update_match_status():
 
     except Exception as e:
         logger.error(f'Error updating status: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/schedule/check-status/<match_id>', methods=['GET'])
+def check_match_status_endpoint(match_id):
+    """Check if a match has ended by querying Cricbuzz API"""
+    try:
+        # Check local schedule first
+        with state_lock:
+            local_status = None
+            if match_id in matches_schedule:
+                local_status = matches_schedule[match_id]['status']
+
+        # Query Cricbuzz API for live status
+        api_status = check_match_status_from_api(match_id)
+
+        # If API says completed but local says live, auto-update
+        if api_status == 'completed' and local_status == 'live':
+            with state_lock:
+                matches_schedule[match_id]['status'] = 'completed'
+                logger.info(f'[AUTO] Match {match_id} auto-marked COMPLETED (API check)')
+
+        return jsonify({
+            'match_id': match_id,
+            'local_status': local_status,
+            'api_status': api_status,
+            'final_status': 'completed' if api_status == 'completed' else local_status,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        logger.error(f'Error checking status: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 @app.errorhandler(404)
