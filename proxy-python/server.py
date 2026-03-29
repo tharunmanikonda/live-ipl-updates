@@ -82,16 +82,58 @@ def check_match_completion_from_api(match_id):
         logger.debug(f'[API] Error checking completion: {str(e)}')
         return False
 
+def fetch_match_details_from_cricbuzz(teams):
+    """
+    Fetch match details from Cricbuzz live API
+    Returns: {cricbuzz_id, search_string, match_data}
+    """
+    try:
+        response = requests.get('https://www.cricbuzz.com/cricket-match/live-scores',
+                               headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # Extract all match links
+        match_links = soup.find_all('a', class_=re.compile(r'block\s+mb-3'))
+        teams_lower = teams.lower()
+
+        for match_link in match_links:
+            href = match_link.get('href', '')
+            title = match_link.get('title', '').lower()
+
+            if not href or '/live-cricket-scores/' not in href:
+                continue
+
+            # Check if both teams match
+            team_list = teams.split(' vs ')
+            if all(team.strip().lower() in title for team in team_list):
+                match_id_match = re.search(r'/live-cricket-scores/(\d+)/', href)
+                if match_id_match:
+                    cricbuzz_id = match_id_match.group(1)
+                    search_string = match_link.get('title', '')
+
+                    logger.info(f'[FETCH] Found match {teams}: Cricbuzz ID {cricbuzz_id}')
+                    return {
+                        'cricbuzz_id': cricbuzz_id,
+                        'search_string': search_string,
+                        'found_at': datetime.now().isoformat()
+                    }
+
+        logger.warning(f'[FETCH] Could not find match {teams} in live matches')
+        return None
+    except Exception as e:
+        logger.error(f'[FETCH] Error fetching match details: {str(e)}')
+        return None
+
 def auto_start_matches():
     """
     Background job: Auto-start matches when their scheduled start time arrives
-    Marks matches as "live" automatically at IST start time
+    Fetches match details from Cricbuzz ONCE and stores in schedule
     """
     try:
         logger.debug('[AUTO-START] Checking for matches that should start...')
 
         # Get current time in IST
-        # Convert UTC server time to IST
         from datetime import timezone as tz_module
         now_utc = datetime.now(tz_module.utc)
         current_time_ist = now_utc.astimezone(IST)
@@ -112,13 +154,24 @@ def auto_start_matches():
                     start_dt = datetime.fromisoformat(time_part)
                     start_dt_ist = IST.localize(start_dt)
 
-                    # If current time >= start time, mark as LIVE
+                    # If current time >= start time, fetch details and mark as LIVE
                     if current_time_ist >= start_dt_ist:
-                        # Check if we haven't already started this match
-                        if match_data.get('status') == 'scheduled':
-                            matches_schedule[match_id]['status'] = 'live'
-                            logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-marked as LIVE at {start_dt_ist}')
-                            logger.info(f'[AUTO-START] Teams: {match_data.get("teams")} | Polling will start in next cycle')
+                        if match_data.get('status') == 'scheduled' and not match_data.get('cricbuzz_id'):
+                            teams = match_data.get('teams', '')
+
+                            # FETCH MATCH DETAILS ONCE
+                            match_details = fetch_match_details_from_cricbuzz(teams)
+
+                            if match_details:
+                                # Store all details in schedule
+                                matches_schedule[match_id]['cricbuzz_id'] = match_details['cricbuzz_id']
+                                matches_schedule[match_id]['search_string'] = match_details['search_string']
+                                matches_schedule[match_id]['status'] = 'live'
+
+                                logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-started')
+                                logger.info(f'[AUTO-START] Teams: {teams}')
+                                logger.info(f'[AUTO-START] Cricbuzz ID: {match_details["cricbuzz_id"]}')
+                                logger.info(f'[AUTO-START] Polling will start in next cycle')
 
                 except Exception as e:
                     logger.debug(f'[AUTO-START] Error processing {match_id}: {str(e)}')
@@ -297,9 +350,6 @@ def poll_live_matches():
         with state_lock:
             polling_state['last_check'] = datetime.now().isoformat()
             polling_state['active_matches'] = set(matches_to_poll)
-
-        # First, fetch and map Cricbuzz numeric IDs for all live matches
-        fetch_and_map_cricbuzz_ids()
 
         # Check each match marked as live in schedule for new events
         for match_id in matches_to_poll:
