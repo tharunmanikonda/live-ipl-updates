@@ -84,9 +84,19 @@ def check_match_completion_from_api(match_id):
 
 def fetch_match_details_from_cricbuzz(teams):
     """
-    Fetch match details from Cricbuzz live API
-    Matches by abbreviations or full team names
-    Returns: {cricbuzz_id, search_string, match_data}
+    Fetch COMPREHENSIVE match details from Cricbuzz when match starts
+    Get ALL information needed for entire match polling cycle
+
+    Returns: {
+        cricbuzz_id,
+        match_title,
+        team1, team2,
+        venue,
+        match_url,
+        commentary_api_url,
+        pagination_api_url,
+        found_at
+    }
     """
     try:
         response = requests.get('https://www.cricbuzz.com/cricket-match/live-scores',
@@ -129,15 +139,37 @@ def fetch_match_details_from_cricbuzz(teams):
                 match_id_match = re.search(r'/live-cricket-scores/(\d+)/', href)
                 if match_id_match:
                     cricbuzz_id = match_id_match.group(1)
-                    search_string = title
 
-                    logger.info(f'[FETCH] ✅ Found match {teams}: Cricbuzz ID {cricbuzz_id}')
-                    logger.info(f'[FETCH] Title: {title}')
-                    return {
+                    # Extract team names from title
+                    # Title format: "Team1 vs Team2 - Description"
+                    title_parts = title.split(' - ')[0] if ' - ' in title else title
+                    teams_in_title = title_parts.split(' vs ')
+                    team1 = teams_in_title[0].strip() if len(teams_in_title) > 0 else teams_list[0]
+                    team2 = teams_in_title[1].strip() if len(teams_in_title) > 1 else teams_list[1]
+
+                    # Build API URLs
+                    match_url = f'https://www.cricbuzz.com{href}'
+                    commentary_api_url = f'https://www.cricbuzz.com/api/mcenter/comm/{cricbuzz_id}'
+                    pagination_api_url = f'https://www.cricbuzz.com/api/mcenter/commentary-pagination/{cricbuzz_id}'
+
+                    match_details = {
                         'cricbuzz_id': cricbuzz_id,
-                        'search_string': search_string,
+                        'match_title': title,
+                        'team1': team1,
+                        'team2': team2,
+                        'match_url': match_url,
+                        'commentary_api_url': commentary_api_url,
+                        'pagination_api_url': pagination_api_url,
                         'found_at': datetime.now().isoformat()
                     }
+
+                    logger.info(f'[FETCH] ✅ Found match {teams}')
+                    logger.info(f'[FETCH] Cricbuzz ID: {cricbuzz_id}')
+                    logger.info(f'[FETCH] Title: {title}')
+                    logger.info(f'[FETCH] Teams: {team1} vs {team2}')
+                    logger.info(f'[FETCH] Stored all APIs in schedule for polling')
+
+                    return match_details
 
         logger.warning(f'[FETCH] ⚠️  Could not find {teams} in live matches')
         logger.warning(f'[FETCH] Searched for: {search_terms}')
@@ -180,19 +212,25 @@ def auto_start_matches():
                         if match_data.get('status') == 'scheduled' and not match_data.get('cricbuzz_id'):
                             teams = match_data.get('teams', '')
 
-                            # FETCH MATCH DETAILS ONCE
+                            # FETCH ALL MATCH DETAILS ONCE
                             match_details = fetch_match_details_from_cricbuzz(teams)
 
                             if match_details:
-                                # Store all details in schedule
+                                # Store ALL details in schedule for polling
                                 matches_schedule[match_id]['cricbuzz_id'] = match_details['cricbuzz_id']
-                                matches_schedule[match_id]['search_string'] = match_details['search_string']
+                                matches_schedule[match_id]['match_title'] = match_details['match_title']
+                                matches_schedule[match_id]['team1'] = match_details['team1']
+                                matches_schedule[match_id]['team2'] = match_details['team2']
+                                matches_schedule[match_id]['match_url'] = match_details['match_url']
+                                matches_schedule[match_id]['commentary_api_url'] = match_details['commentary_api_url']
+                                matches_schedule[match_id]['pagination_api_url'] = match_details['pagination_api_url']
                                 matches_schedule[match_id]['status'] = 'live'
 
-                                logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-started')
-                                logger.info(f'[AUTO-START] Teams: {teams}')
+                                logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-started!')
                                 logger.info(f'[AUTO-START] Cricbuzz ID: {match_details["cricbuzz_id"]}')
-                                logger.info(f'[AUTO-START] Polling will start in next cycle')
+                                logger.info(f'[AUTO-START] Teams: {match_details["team1"]} vs {match_details["team2"]}')
+                                logger.info(f'[AUTO-START] All match info stored in schedule ✅')
+                                logger.info(f'[AUTO-START] Polling will use stored APIs starting next cycle')
 
                 except Exception as e:
                     logger.debug(f'[AUTO-START] Error processing {match_id}: {str(e)}')
