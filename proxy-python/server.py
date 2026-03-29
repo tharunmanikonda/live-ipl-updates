@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import json
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -50,38 +50,38 @@ def set_cache(key, data):
         'timestamp': datetime.now().timestamp()
     }
 
-def check_match_status_from_api(match_id):
+def should_stop_polling(match_id):
     """
-    Check Cricbuzz API to see if match has ended.
-    Returns: 'live', 'completed', or 'unknown'
+    Check if polling should stop for this match (12 AM cutoff)
     """
+    from datetime import datetime, time
+
     try:
-        # Try commentary API to check for match-end indicators
-        url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
-        resp = requests.get(url, headers=HEADERS, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
+        # Get match start time from schedule
+        with state_lock:
+            if match_id not in matches_schedule:
+                return False
 
-            # Check various status indicators in the API response
-            match_info = data.get('matchInfo', {})
-            status = match_info.get('matchState', '').lower()
+            start_time_str = matches_schedule[match_id].get('start_time', '')
 
-            if 'completed' in status or 'ended' in status or 'finished' in status:
-                return 'completed'
-            if 'live' in status or 'ongoing' in status or 'in progress' in status:
-                return 'live'
+        if not start_time_str:
+            return False
 
-            # Fallback: check recent commentary for match-end indicators
-            recent_comm = data.get('recentComm', [])
-            if recent_comm:
-                recent_text = ' '.join([c.get('commText', '').lower() for c in recent_comm[:5]])
-                if 'match' in recent_text and any(x in recent_text for x in ['won', 'ended', 'finished']):
-                    return 'completed'
+        # Parse start time (format: "2026-03-29 19:00" IST)
+        start_dt = datetime.fromisoformat(start_time_str.split(' IST')[0])
 
-        return 'unknown'
+        # If current time is past next day 12:00 AM, stop polling
+        current_time = datetime.now()
+        next_midnight = start_dt.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+
+        if current_time >= next_midnight:
+            logger.info(f'[POLL] ⏰ Past 12 AM cutoff for match {match_id} - stopping polling')
+            return True
+
+        return False
     except Exception as e:
-        logger.debug(f'[API] Error checking match status: {str(e)}')
-        return 'unknown'
+        logger.debug(f'[POLL] Error checking time cutoff: {str(e)}')
+        return False
 
 def send_webhook_event(match_id, event_type, event_data):
     """Send webhook event to all subscribed webhooks for a match"""
@@ -181,17 +181,15 @@ def poll_live_matches():
         for match_id in matches_to_poll:
             # This match is already confirmed to have webhooks and be marked live
 
-            logger.info(f'[POLL] Checking match {match_id} for new events...')
-
-            # 🔍 CHECK MATCH STATUS FROM API
-            api_status = check_match_status_from_api(match_id)
-            if api_status == 'completed':
-                logger.info(f'[AUTO] 🏁 Match {match_id} detected as COMPLETED via API')
+            # ⏰ Check if we've passed 12 AM cutoff for this match
+            if should_stop_polling(match_id):
                 with state_lock:
                     if match_id in matches_schedule:
                         matches_schedule[match_id]['status'] = 'completed'
-                        logger.info(f'[AUTO] Polling will STOP for this match')
-                        continue  # Skip polling this match
+                        logger.info(f'[AUTO] 🏁 Match {match_id} auto-marked COMPLETED (12 AM cutoff)')
+                continue  # Skip polling this match
+
+            logger.info(f'[POLL] Checking match {match_id} for new events...')
 
             # Get ball-by-ball commentary with smart timestamp tracking
             try:
@@ -312,19 +310,12 @@ def poll_live_matches():
                             })
                             logger.info(f'[POLL] Detected innings start - Innings {ball["innings"]}')
 
-                    # Check for match end
+                    # Check for match end in commentary (send event but don't rely on it for stopping)
                     if 'match' in text and ('won' in text or 'end' in text or 'finished' in text):
                         send_webhook_event(match_id, 'match_end', {
                             'commentary': ball['text'][:500]
                         })
-                        logger.info(f'[POLL] Detected match end')
-
-                        # ✅ AUTO-MARK MATCH AS COMPLETED (no manual update needed)
-                        with state_lock:
-                            if match_id in matches_schedule:
-                                matches_schedule[match_id]['status'] = 'completed'
-                                logger.info(f'[AUTO] 🏁 Match {match_id} auto-marked as COMPLETED')
-                                logger.info(f'[AUTO] Polling will now STOP for this match')
+                        logger.info(f'[POLL] Detected match end in commentary')
 
             except Exception as e:
                 logger.error(f'[POLL] Error processing match {match_id}: {str(e)}')
@@ -1449,35 +1440,25 @@ def update_match_status():
         logger.error(f'Error updating status: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
-@app.route('/schedule/check-status/<match_id>', methods=['GET'])
-def check_match_status_endpoint(match_id):
-    """Check if a match has ended by querying Cricbuzz API"""
+@app.route('/schedule/check-cutoff/<match_id>', methods=['GET'])
+def check_cutoff_endpoint(match_id):
+    """Check if match has reached 12 AM cutoff for polling"""
     try:
-        # Check local schedule first
+        should_stop = should_stop_polling(match_id)
+
         with state_lock:
-            local_status = None
-            if match_id in matches_schedule:
-                local_status = matches_schedule[match_id]['status']
-
-        # Query Cricbuzz API for live status
-        api_status = check_match_status_from_api(match_id)
-
-        # If API says completed but local says live, auto-update
-        if api_status == 'completed' and local_status == 'live':
-            with state_lock:
-                matches_schedule[match_id]['status'] = 'completed'
-                logger.info(f'[AUTO] Match {match_id} auto-marked COMPLETED (API check)')
+            match_info = matches_schedule.get(match_id, {})
 
         return jsonify({
             'match_id': match_id,
-            'local_status': local_status,
-            'api_status': api_status,
-            'final_status': 'completed' if api_status == 'completed' else local_status,
-            'timestamp': datetime.now().isoformat()
+            'start_time': match_info.get('start_time'),
+            'should_stop_polling': should_stop,
+            'current_time': datetime.now().isoformat(),
+            'message': '12 AM cutoff reached' if should_stop else 'Still within polling window'
         })
 
     except Exception as e:
-        logger.error(f'Error checking status: {str(e)}')
+        logger.error(f'Error checking cutoff: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 @app.errorhandler(404)
