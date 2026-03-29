@@ -575,24 +575,30 @@ def poll_live_matches():
                     }
 
                 # Process new balls and send webhooks for events
+                logger.info(f'[POLL] Processing {len(new_balls)} new balls for match {match_id}')
                 for ball in new_balls:
                     over_num = ball.get('ball', '')
                     over_number = ball.get('over_number')  # Track actual overNumber
                     ball_number = ball.get('ball_number')
-                    commentary = ball.get('text', '')[:500]
+                    commentary = ball.get('text', '')[:100]
                     event_type = ball.get('event', '')  # Structured event from API
+
+                    logger.info(f'[POLL] Ball at over {over_number}: event="{event_type}" | commentary: {commentary}')
 
                     # Simple logic: If API has event → Send webhook (timestamp prevents duplicates)
                     if event_type and event_type != 'NONE':
+                        logger.info(f'[POLL] 🎯 EVENT DETECTED: {event_type}')
                         send_webhook_event(match_id, 'event', {
                             'event': event_type,
                             'over': over_num,
                             'overNumber': over_number,
                             'ballNumber': ball_number,
-                            'commentary': commentary,
+                            'commentary': ball.get('text', '')[:500],
                             'timestamp': ball.get('timestamp')
                         })
-                        logger.info(f'[POLL] 🎯 EVENT: {event_type} at over {over_number} | {commentary[:50]}')
+                        logger.info(f'[POLL] 🎯 EVENT SENT: {event_type} at over {over_number}')
+                    else:
+                        logger.info(f'[POLL] ℹ️ No event (event="{event_type}") at over {over_number}')
 
             except Exception as e:
                 logger.error(f'[POLL] Error processing match {match_id}: {str(e)}')
