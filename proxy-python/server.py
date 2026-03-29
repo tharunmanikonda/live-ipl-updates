@@ -696,15 +696,23 @@ def poll_live_matches():
                             'players_data': item.get('players_data', {})  # ← Include player details
                         })
 
-                # Compare with previous state
+                # Compare with previous state using unique ball identifiers (over + ball number)
                 with state_lock:
                     prev_state = match_state.get(match_id, {'balls': [], 'match_state': ''})
                     prev_balls = prev_state.get('balls', [])
 
-                    # Find new balls
+                    # Build unique ball IDs from previous balls to avoid duplicate webhook sends
+                    prev_ball_ids = set()
+                    for ball in prev_balls:
+                        ball_id = f"{ball.get('over_number')}_{ball.get('ball_number')}"
+                        prev_ball_ids.add(ball_id)
+
+                    # Find new balls (ones we haven't seen before by ID)
                     new_balls = []
                     for curr_ball in current_balls:
-                        if curr_ball not in prev_balls:
+                        ball_id = f"{curr_ball.get('over_number')}_{curr_ball.get('ball_number')}"
+                        # Only add if we haven't seen this ball ID before
+                        if ball_id not in prev_ball_ids:
                             new_balls.append(curr_ball)
 
                     # Update state with balls and timestamp (preserve match_state)
