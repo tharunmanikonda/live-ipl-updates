@@ -1,0 +1,41 @@
+# Node modules
+node_modules/
+proxy-puppeteer/node_modules/
+package-lock.json
+proxy-puppeteer/package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Logs
+*.log
+server.log
+server_test.log
+test.log
+
+# Data files (persistent)
+webhooks.json
+match_state.json
+schedule.json
+
+# Test files
+test_webhooks.py
+quick_test.sh
+*_test.py
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Demo files
+worker/demo
