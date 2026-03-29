@@ -288,7 +288,10 @@ def should_stop_polling(match_id):
 def send_webhook_event(match_id, event_type, event_data):
     """Send webhook event to all subscribed webhooks for a match"""
     match_webhooks = webhooks.get(match_id, [])
+    logger.info(f'[WEBHOOK] Event triggered - match_id={match_id}, event_type={event_type}, registered_webhooks={len(match_webhooks)}')
+
     if not match_webhooks:
+        logger.warning(f'[WEBHOOK] No webhooks registered for match {match_id}')
         return 0, 0
 
     payload = {
@@ -305,13 +308,13 @@ def send_webhook_event(match_id, event_type, event_data):
             response = requests.post(webhook_url, json=payload, timeout=5)
             if response.status_code in [200, 201, 202]:
                 sent += 1
-                logger.info(f'[WEBHOOK] Sent {event_type} to {webhook_url}')
+                logger.info(f'[WEBHOOK] ✅ Sent {event_type} to {webhook_url}')
             else:
                 failed += 1
-                logger.warning(f'[WEBHOOK] Failed to send to {webhook_url}: {response.status_code}')
+                logger.warning(f'[WEBHOOK] ❌ Failed to send to {webhook_url}: {response.status_code}')
         except Exception as e:
             failed += 1
-            logger.debug(f'[WEBHOOK] Error sending to {webhook_url}: {str(e)}')
+            logger.error(f'[WEBHOOK] ❌ Error sending to {webhook_url}: {str(e)}')
 
     return sent, failed
 
@@ -475,48 +478,79 @@ def poll_live_matches():
             except Exception as e:
                 logger.debug(f'[POLL] Error checking toss: {str(e)}')
 
-            # Get ball-by-ball commentary with smart timestamp tracking
+            # Get ball-by-ball commentary from livescore endpoint
             try:
                 commentary_data = []
+                max_new_timestamp = 0
 
-                # Get last timestamp from state (for efficient pagination)
+                # Get last timestamp from state for smart filtering
                 with state_lock:
                     last_timestamp = match_state.get(match_id, {}).get('last_timestamp', 0)
 
-                # Use last_timestamp if available, otherwise start from 0
-                query_timestamp = last_timestamp if last_timestamp > 0 else 0
+                logger.info(f'[POLL] Fetching livescore from timestamp: {last_timestamp} for match {match_id} (ID: {cricbuzz_id})')
 
-                logger.info(f'[POLL] Fetching data from timestamp: {query_timestamp} for match {match_id} (ID: {cricbuzz_id})')
+                # Use the livescore endpoint - it returns all current data
+                url = f'https://www.cricbuzz.com/api/mcenter/livescore/{cricbuzz_id}'
+                logger.info(f'[POLL] Fetching URL: {url}')
 
-                for innings_id in [2, 1]:
-                    # Use smart timestamp: if we have previous data, fetch only newer data
-                    # If not, use 0 to get initial data
-                    url = f'https://www.cricbuzz.com/api/mcenter/commentary-pagination/{cricbuzz_id}/{innings_id}/{query_timestamp}'
-                    resp = requests.get(url, headers=HEADERS, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if isinstance(data, list):
-                            commentary_data.extend(data)
-                            # Update last timestamp from response
-                            if data:
-                                latest_item = data[-1]
-                                if 'timestamp' in latest_item:
-                                    new_timestamp = latest_item['timestamp']
-                                    with state_lock:
-                                        if match_id in match_state:
-                                            match_state[match_id]['last_timestamp'] = new_timestamp
-                                    logger.debug(f'[POLL] Updated last_timestamp to {new_timestamp} for match {match_id}')
+                resp = requests.get(url, headers=HEADERS, timeout=10)
+                logger.info(f'[POLL] Response status: {resp.status_code}')
 
-                # Extract ball events
+                if resp.status_code == 200:
+                    try:
+                        live_data = resp.json()
+                        commentary_data = live_data.get('commentaryList', [])
+                        miniscore = live_data.get('miniscore', {})
+
+                        logger.info(f'[POLL] Livescore response: {len(commentary_data)} commentary items')
+                        logger.info(f'[POLL] Match state: {miniscore.get("matchScoreDetails", {}).get("state", "Unknown")}')
+
+                        # Update match state from miniscore
+                        if miniscore:
+                            match_score_details = miniscore.get('matchScoreDetails', {})
+                            current_state = match_score_details.get('state', '').lower()
+
+                            with state_lock:
+                                if match_id not in match_state:
+                                    match_state[match_id] = {}
+                                match_state[match_id]['match_state'] = current_state
+
+                        # Find new commentary since last_timestamp
+                        for item in commentary_data:
+                            item_timestamp = item.get('timestamp', 0)
+                            if item_timestamp > last_timestamp:
+                                max_new_timestamp = max(max_new_timestamp, item_timestamp)
+
+                        if max_new_timestamp > 0:
+                            logger.info(f'[POLL] Found new commentary, latest timestamp: {max_new_timestamp}')
+                        else:
+                            logger.info(f'[POLL] No new commentary since timestamp {last_timestamp}')
+
+                    except Exception as e:
+                        logger.error(f'[POLL] Failed to parse livescore response: {str(e)}')
+                        commentary_data = []
+                else:
+                    logger.warning(f'[POLL] Livescore API returned {resp.status_code} for match {cricbuzz_id}')
+
+                # Extract ball events from livescore commentary
                 current_balls = []
                 for item in commentary_data:
-                    if item.get('commType') == 'commentary' and 'ballMetric' in item:
+                    # Livescore endpoint structure is different from commentary-pagination
+                    comm_text = item.get('commText', '')
+                    over_number = item.get('overNumber')
+                    ball_nbr = item.get('ballNbr')
+
+                    # Only process commentary items with actual text
+                    if comm_text:
                         current_balls.append({
-                            'ball': str(item.get('ballMetric')),
-                            'text': item.get('commText', ''),
-                            'batsman': item.get('batsmanDetails', {}).get('playerName', ''),
-                            'bowler': item.get('bowlerDetails', {}).get('playerName', ''),
-                            'innings': item.get('inningsId')
+                            'ball': str(over_number) if over_number is not None else '',
+                            'over_number': over_number,  # ← Track overNumber separately
+                            'ball_number': ball_nbr,
+                            'text': comm_text,
+                            'timestamp': item.get('timestamp', 0),
+                            'event': item.get('event', 'NONE'),
+                            'innings': item.get('inningsId'),
+                            'batTeam': item.get('batTeamName', '')
                         })
 
                 # Compare with previous state
@@ -531,43 +565,34 @@ def poll_live_matches():
                             new_balls.append(curr_ball)
 
                     # Update state with balls and timestamp (preserve match_state)
+                    # Use max_new_timestamp from livescore API response
+                    final_timestamp = max_new_timestamp if max_new_timestamp > 0 else last_timestamp
+                    logger.info(f'[POLL] Updating match {match_id} state: last_timestamp={final_timestamp}, new_balls={len(new_balls)}, total_balls={len(current_balls)}')
                     match_state[match_id] = {
                         'balls': current_balls,
-                        'last_timestamp': query_timestamp if current_balls else 0,
+                        'last_timestamp': final_timestamp,
                         'match_state': match_state.get(match_id, {}).get('match_state', '')
                     }
 
-                # Process new balls and send webhooks for filtered events
+                # Process new balls and send webhooks for events
                 for ball in new_balls:
-                    text = ball['text'].lower()
+                    over_num = ball.get('ball', '')
+                    over_number = ball.get('over_number')  # Track actual overNumber
+                    ball_number = ball.get('ball_number')
+                    commentary = ball.get('text', '')[:500]
+                    event_type = ball.get('event', '')  # Structured event from API
 
-                    # Check for events we care about
-                    if '4' in text or 'four' in text or 'boundary 4' in text:
-                        send_webhook_event(match_id, 'boundary', {
-                            'type': '4',
-                            'ball': ball['ball'],
-                            'batsman': ball['batsman'],
-                            'commentary': ball['text'][:500]
+                    # Simple logic: If API has event → Send webhook (timestamp prevents duplicates)
+                    if event_type and event_type != 'NONE':
+                        send_webhook_event(match_id, 'event', {
+                            'event': event_type,
+                            'over': over_num,
+                            'overNumber': over_number,
+                            'ballNumber': ball_number,
+                            'commentary': commentary,
+                            'timestamp': ball.get('timestamp')
                         })
-                        logger.info(f'[POLL] Detected 4 at {ball["ball"]} - {ball["batsman"]}')
-
-                    if '6' in text or 'six' in text or 'boundary 6' in text:
-                        send_webhook_event(match_id, 'boundary', {
-                            'type': '6',
-                            'ball': ball['ball'],
-                            'batsman': ball['batsman'],
-                            'commentary': ball['text'][:500]
-                        })
-                        logger.info(f'[POLL] Detected 6 at {ball["ball"]} - {ball["batsman"]}')
-
-                    if 'wicket' in text or 'out' in text or 'caught' in text or 'bowled' in text or 'lbw' in text:
-                        send_webhook_event(match_id, 'wicket', {
-                            'ball': ball['ball'],
-                            'batsman': ball['batsman'],
-                            'bowler': ball['bowler'],
-                            'commentary': ball['text'][:500]
-                        })
-                        logger.info(f'[POLL] Detected wicket at {ball["ball"]} - {ball["batsman"]}')
+                        logger.info(f'[POLL] 🎯 EVENT: {event_type} at over {over_number} | {commentary[:50]}')
 
                     # Check for over boundaries in commentary
                     if 'end of' in text and 'over' in text:
@@ -612,6 +637,35 @@ def poll_live_matches():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
+
+@app.route('/debug/state', methods=['GET'])
+def debug_state():
+    """Show internal system state for debugging"""
+    with state_lock:
+        return jsonify({
+            'timestamp': datetime.now().isoformat(),
+            'match_state': {
+                mid: {
+                    'last_timestamp': state.get('last_timestamp'),
+                    'balls_count': len(state.get('balls', [])),
+                    'match_state': state.get('match_state', 'unknown')
+                }
+                for mid, state in match_state.items()
+            },
+            'webhooks': {
+                mid: urls
+                for mid, urls in webhooks.items()
+            },
+            'schedule_summary': {
+                mid: {
+                    'title': data.get('title'),
+                    'status': data.get('status'),
+                    'start_time': data.get('start_time'),
+                    'cricbuzz_id': data.get('cricbuzz_id')
+                }
+                for mid, data in matches_schedule.items()
+            }
+        })
 
 @app.route('/cricket/debug', methods=['GET'])
 def debug():
@@ -1308,8 +1362,8 @@ def list_webhooks(match_id):
     })
 
 @app.route('/webhook/send', methods=['POST'])
-def send_webhook_event():
-    """Send event to all registered webhooks for a match"""
+def trigger_webhook_event():
+    """HTTP endpoint to manually send event to all registered webhooks for a match"""
     try:
         data = request.get_json()
         match_id = data.get('match_id')
