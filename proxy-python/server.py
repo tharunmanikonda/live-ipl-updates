@@ -85,6 +85,7 @@ def check_match_completion_from_api(match_id):
 def fetch_match_details_from_cricbuzz(teams):
     """
     Fetch match details from Cricbuzz live API
+    Matches by abbreviations or full team names
     Returns: {cricbuzz_id, search_string, match_data}
     """
     try:
@@ -95,31 +96,51 @@ def fetch_match_details_from_cricbuzz(teams):
 
         # Extract all match links
         match_links = soup.find_all('a', class_=re.compile(r'block\s+mb-3'))
-        teams_lower = teams.lower()
+
+        # Team abbreviation to full name mapping
+        team_mapping = {
+            'MI': 'Mumbai', 'KKR': 'Kolkata', 'RCB': 'Bengaluru', 'CSK': 'Chennai',
+            'RR': 'Rajasthan', 'DC': 'Delhi', 'PBKS': 'Punjab', 'GT': 'Gujarat',
+            'LSG': 'Lucknow', 'SRH': 'Sunrisers'
+        }
+
+        teams_list = [t.strip() for t in teams.split(' vs ')]
+
+        # Expand abbreviations to full names
+        search_terms = []
+        for team in teams_list:
+            if team in team_mapping:
+                search_terms.append(team_mapping[team])
+            else:
+                search_terms.append(team)
+
+        logger.debug(f'[FETCH] Searching for: {search_terms}')
 
         for match_link in match_links:
             href = match_link.get('href', '')
-            title = match_link.get('title', '').lower()
+            title = match_link.get('title', '')
+            title_lower = title.lower()
 
             if not href or '/live-cricket-scores/' not in href:
                 continue
 
-            # Check if both teams match
-            team_list = teams.split(' vs ')
-            if all(team.strip().lower() in title for team in team_list):
+            # Check if all team names/terms appear in title
+            if all(term.lower() in title_lower for term in search_terms):
                 match_id_match = re.search(r'/live-cricket-scores/(\d+)/', href)
                 if match_id_match:
                     cricbuzz_id = match_id_match.group(1)
-                    search_string = match_link.get('title', '')
+                    search_string = title
 
-                    logger.info(f'[FETCH] Found match {teams}: Cricbuzz ID {cricbuzz_id}')
+                    logger.info(f'[FETCH] ✅ Found match {teams}: Cricbuzz ID {cricbuzz_id}')
+                    logger.info(f'[FETCH] Title: {title}')
                     return {
                         'cricbuzz_id': cricbuzz_id,
                         'search_string': search_string,
                         'found_at': datetime.now().isoformat()
                     }
 
-        logger.warning(f'[FETCH] Could not find match {teams} in live matches')
+        logger.warning(f'[FETCH] ⚠️  Could not find {teams} in live matches')
+        logger.warning(f'[FETCH] Searched for: {search_terms}')
         return None
     except Exception as e:
         logger.error(f'[FETCH] Error fetching match details: {str(e)}')
