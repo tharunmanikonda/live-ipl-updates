@@ -212,9 +212,64 @@ polling_state = {
 
 # Match schedule document - tracks when matches happen
 matches_schedule = {
-    # Format: match_id: {title, start_time, status, created_at}
+    # Format: match_id: {title, start_time, status, created_at, cricbuzz_id}
     # Status: 'scheduled', 'live', 'completed', 'cancelled'
 }
+
+def fetch_and_map_cricbuzz_ids():
+    """
+    Fetch live matches from Cricbuzz API and map numeric IDs to our schedule
+    Stores cricbuzz_id in our schedule for ball-by-ball fetching
+    """
+    try:
+        logger.debug('[CRICBUZZ-MAP] Fetching live matches to map numeric IDs...')
+
+        # Fetch from Cricbuzz live page (returns HTML with match IDs in URLs)
+        response = requests.get('https://www.cricbuzz.com/cricket-match/live-scores',
+                               headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # Extract all match links
+        match_links = soup.find_all('a', class_=re.compile(r'block\s+mb-3'))
+        cricbuzz_matches = {}
+
+        for match_link in match_links:
+            href = match_link.get('href', '')
+            if not href or '/live-cricket-scores/' not in href:
+                continue
+
+            match_id_match = re.search(r'/live-cricket-scores/(\d+)/', href)
+            if not match_id_match:
+                continue
+
+            cricbuzz_id = match_id_match.group(1)
+            title = match_link.get('title', '')
+            cricbuzz_matches[cricbuzz_id] = title
+
+        logger.debug(f'[CRICBUZZ-MAP] Found {len(cricbuzz_matches)} live matches on Cricbuzz')
+
+        # Map Cricbuzz matches to our schedule by comparing team names
+        with state_lock:
+            for our_match_id, our_data in matches_schedule.items():
+                # Skip if already has cricbuzz_id
+                if our_data.get('cricbuzz_id'):
+                    continue
+
+                our_teams = our_data.get('teams', '').lower()
+
+                # Try to match with Cricbuzz matches
+                for cricbuzz_id, cricbuzz_title in cricbuzz_matches.items():
+                    cricbuzz_title_lower = cricbuzz_title.lower()
+
+                    # Check if team names match
+                    if all(team.strip() in cricbuzz_title_lower for team in our_teams.split(' vs ')):
+                        matches_schedule[our_match_id]['cricbuzz_id'] = cricbuzz_id
+                        logger.info(f'[CRICBUZZ-MAP] ✅ Mapped {our_match_id} → Cricbuzz ID {cricbuzz_id}')
+                        break
+
+    except Exception as e:
+        logger.debug(f'[CRICBUZZ-MAP] Error: {str(e)}')
 
 def poll_live_matches():
     """Background job: Smart polling - only fetches ball-by-ball for scheduled live matches"""
@@ -243,6 +298,9 @@ def poll_live_matches():
             polling_state['last_check'] = datetime.now().isoformat()
             polling_state['active_matches'] = set(matches_to_poll)
 
+        # First, fetch and map Cricbuzz numeric IDs for all live matches
+        fetch_and_map_cricbuzz_ids()
+
         # Check each match marked as live in schedule for new events
         for match_id in matches_to_poll:
             # This match is already confirmed to have webhooks and be marked live
@@ -255,11 +313,20 @@ def poll_live_matches():
                         logger.info(f'[AUTO] 🏁 Match {match_id} auto-marked COMPLETED (12 AM cutoff)')
                 continue  # Skip polling this match
 
-            logger.info(f'[POLL] Checking match {match_id} for new events...')
+            # Get Cricbuzz numeric ID for this match
+            with state_lock:
+                match_data = matches_schedule.get(match_id, {})
+                cricbuzz_id = match_data.get('cricbuzz_id')
+
+            if not cricbuzz_id:
+                logger.warning(f'[POLL] ⚠️  No Cricbuzz ID found for {match_id} - skipping')
+                continue
+
+            logger.info(f'[POLL] Checking match {match_id} (Cricbuzz ID: {cricbuzz_id}) for new events...')
 
             # 🎲 CHECK FOR TOSS EVENT
             try:
-                comm_url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
+                comm_url = f'https://www.cricbuzz.com/api/mcenter/comm/{cricbuzz_id}'
                 comm_resp = requests.get(comm_url, headers=HEADERS, timeout=5)
                 if comm_resp.status_code == 200:
                     comm_data = comm_resp.json()
@@ -310,12 +377,12 @@ def poll_live_matches():
                 # Use last_timestamp if available, otherwise start from 0
                 query_timestamp = last_timestamp if last_timestamp > 0 else 0
 
-                logger.info(f'[POLL] Fetching data from timestamp: {query_timestamp} for match {match_id}')
+                logger.info(f'[POLL] Fetching data from timestamp: {query_timestamp} for match {match_id} (ID: {cricbuzz_id})')
 
                 for innings_id in [2, 1]:
                     # Use smart timestamp: if we have previous data, fetch only newer data
                     # If not, use 0 to get initial data
-                    url = f'https://www.cricbuzz.com/api/mcenter/commentary-pagination/{match_id}/{innings_id}/{query_timestamp}'
+                    url = f'https://www.cricbuzz.com/api/mcenter/commentary-pagination/{cricbuzz_id}/{innings_id}/{query_timestamp}'
                     resp = requests.get(url, headers=HEADERS, timeout=10)
                     if resp.status_code == 200:
                         data = resp.json()
