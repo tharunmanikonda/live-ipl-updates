@@ -677,23 +677,59 @@ def poll_live_matches():
                 # Extract ball events from livescore commentary
                 current_balls = []
                 for item in commentary_data:
-                    # Livescore endpoint structure is different from commentary-pagination
+                    # Skip non-commentary items (videos, snippets, forecasts, etc.)
+                    if item.get('commType') != 'commentary':
+                        logger.debug(f'[POLL] Skipping {item.get("commType")}: {item.get("eventType", "unknown")}')
+                        continue
+
                     comm_text = item.get('commText', '')
-                    over_number = item.get('overNumber')
-                    ball_nbr = item.get('ballNbr')
+                    over_number = item.get('ballMetric')  # Use ballMetric for over.ball format
+                    timestamp = item.get('timestamp', 0)
 
                     # Only process commentary items with actual text
                     if comm_text:
+                        # Parse event array - API returns ["event_type", "all"] format
+                        event_array = item.get('event', [])
+                        if isinstance(event_array, list) and len(event_array) > 0:
+                            event_str = event_array[0].lower()  # Get first element, lowercase
+                        else:
+                            event_str = 'none'
+
+                        # Map event to standard format
+                        mapped_event = {
+                            'four': 'FOUR',
+                            'six': 'SIX',
+                            'wicket': 'WICKET',
+                            'over-break': 'OVER_BREAK',
+                            'none': 'NONE'
+                        }.get(event_str, 'NONE')
+
+                        # Extract over and ball number from ballMetric (e.g., 14.6 → over 14, ball 6)
+                        if over_number is not None:
+                            over_int = int(over_number)
+                            ball_int = int((over_number - over_int) * 10)
+                        else:
+                            over_int = 0
+                            ball_int = 0
+
+                        # Get over separator data if available (ready-made over summary)
+                        over_separator = item.get('overSeparator')
+
                         current_balls.append({
                             'ball': str(over_number) if over_number is not None else '',
-                            'over_number': over_number,  # ← Track overNumber separately
-                            'ball_number': ball_nbr,
+                            'over_number': over_number,
+                            'over_int': over_int,
+                            'ball_int': ball_int,
                             'text': comm_text,
-                            'timestamp': item.get('timestamp', 0),
-                            'event': item.get('event', 'NONE'),
+                            'timestamp': timestamp,
+                            'event': mapped_event,
+                            'event_array': event_array,  # Keep original for debugging
                             'innings': item.get('inningsId'),
-                            'batTeam': item.get('batTeamName', ''),
-                            'players_data': item.get('players_data', {})  # ← Include player details
+                            'batTeam': item.get('teamName', ''),
+                            'batsman': item.get('batsmanDetails', {}).get('playerName', ''),
+                            'bowler': item.get('bowlerDetails', {}).get('playerName', ''),
+                            'players_data': item.get('players_data', {}),
+                            'over_separator': over_separator  # ← API-provided over summary
                         })
 
                 # Compare with previous state using unique ball identifiers (over + ball number)
@@ -727,75 +763,43 @@ def poll_live_matches():
                     }
                     save_match_state()
 
-                # 🏏 DETECT OVER COMPLETION AND SEND OVER SUMMARY
-                if current_balls:
-                    current_over = int(current_balls[-1].get('over_number', 0))
-                    last_over_number = match_state.get(match_id, {}).get('last_over_number', 0)
+                # 🏏 DETECT OVER COMPLETION AND SEND OVER SUMMARY (using API-provided data)
+                for ball in new_balls:
+                    # Check if this ball has over-break data (API already provides it)
+                    over_separator = ball.get('over_separator')
+                    if over_separator and 'OVER_BREAK' in ball.get('event_array', []):
+                        # Use API-provided over summary (much more accurate!)
+                        over_summary_payload = {
+                            'over_number': over_separator.get('overNumber'),
+                            'over_summary': over_separator.get('overSummary'),
+                            'runs_in_over': over_separator.get('overRuns'),
+                            'batsman_striker': over_separator.get('batStrikerObj', {}),
+                            'batsman_non_striker': over_separator.get('batNonStrikerObj', {}),
+                            'bowler': over_separator.get('bowlerObj', {}),
+                            'batting_team': over_separator.get('batTeamObj', {}),
+                            'timestamp': over_separator.get('timestamp'),
+                            'source': 'API-provided'  # Mark that this came from API
+                        }
 
-                    if current_over > last_over_number and last_over_number > 0:
-                        # Over completed! Get all balls from completed over
-                        completed_over = last_over_number
-                        over_balls = [b for b in current_balls if int(b.get('over_number', 0)) == completed_over]
-
-                        if over_balls:
-                            # Calculate runs in this over
-                            runs_in_over = 0
-                            for b in over_balls:
-                                # Extract runs from commentary or event
-                                if b.get('event') == 'FOUR':
-                                    runs_in_over += 4
-                                elif b.get('event') == 'SIX':
-                                    runs_in_over += 6
-                                # Add runs from extras if available
-                                elif 'runs' in b:
-                                    runs_in_over += b.get('runs', 0)
-
-                            # Get wickets in this over
-                            over_wickets = [b for b in over_balls if b.get('event') == 'WICKET']
-
-                            # Get latest player data
-                            latest_player_data = over_balls[-1].get('players_data', {}) if over_balls else {}
-
-                            # Build over summary payload
-                            over_summary_payload = {
-                                'over_number': completed_over,
-                                'total_balls': len(over_balls),
-                                'runs_in_over': runs_in_over,
-                                'economy': round(runs_in_over / len(over_balls), 2) if over_balls else 0,
-                                'balls': over_balls,
-                                'bowler': latest_player_data.get('bowler', {}),
-                                'batting_team': {
-                                    'name': latest_player_data.get('batting_team'),
-                                    'score': latest_player_data.get('batting_team_score'),
-                                    'wickets': latest_player_data.get('batting_team_wickets')
-                                },
-                                'wickets': over_wickets,
-                                'timestamp': over_balls[-1].get('timestamp') if over_balls else 0
-                            }
-
-                            send_webhook_event(match_id, 'over_complete', over_summary_payload)
-                            logger.info(f'[POLL] 🏏 OVER {completed_over} COMPLETED: {runs_in_over} runs, {len(over_wickets)} wickets')
-
-                            # Update last_over_number in match_state
-                            with state_lock:
-                                if match_id in match_state:
-                                    match_state[match_id]['last_over_number'] = current_over
-                            save_match_state()
+                        send_webhook_event(match_id, 'over_complete', over_summary_payload)
+                        logger.info(f'[POLL] 🏏 OVER {over_separator.get("overNumber")} COMPLETED: {over_separator.get("overRuns")} runs (via API)')
 
                 # Process new balls and send webhooks for events
                 logger.info(f'[POLL] Processing {len(new_balls)} new balls for match {match_id}')
                 for ball in new_balls:
                     over_num = ball.get('ball', '')
-                    over_number = ball.get('over_number')  # Track actual overNumber
-                    ball_number = ball.get('ball_number')
+                    over_number = ball.get('over_number')
+                    batsman = ball.get('batsman', '')
+                    bowler = ball.get('bowler', '')
                     commentary = ball.get('text', '')[:100]
-                    event_type = ball.get('event', '')  # Structured event from API
+                    event_type = ball.get('event', 'NONE')  # Mapped event (FOUR, SIX, WICKET, etc.)
+                    event_array = ball.get('event_array', [])  # Original API array
                     players_data = ball.get('players_data', {})
 
-                    logger.info(f'[POLL] Ball at over {over_number}: event="{event_type}" | commentary: {commentary}')
+                    logger.info(f'[POLL] Ball at over {over_number}: event="{event_type}" array={event_array} | {batsman} vs {bowler}')
 
-                    # Simple logic: If API has event → Send webhook (timestamp prevents duplicates)
-                    if event_type and event_type != 'NONE':
+                    # Detect if this is a structured event (FOUR, SIX, WICKET) vs generic commentary
+                    if event_type in ['FOUR', 'SIX', 'WICKET']:
                         logger.info(f'[POLL] 🎯 EVENT DETECTED: {event_type}')
 
                         # Build webhook payload with all details
@@ -803,35 +807,41 @@ def poll_live_matches():
                             'event': event_type,
                             'over': over_num,
                             'overNumber': over_number,
-                            'ballNumber': ball_number,
                             'commentary': ball.get('text', '')[:500],
                             'timestamp': ball.get('timestamp'),
-                            'players': players_data  # ← Include player details
+                            'batsman': batsman,
+                            'bowler': bowler,
+                            'players': players_data
                         }
 
                         send_webhook_event(match_id, 'event', payload)
-
-                        # Log who was involved in the event
-                        batsman = players_data.get('batsman_striker', {}).get('name')
-                        bowler = players_data.get('bowler', {}).get('name')
                         logger.info(f'[POLL] 🎯 EVENT SENT: {event_type} at over {over_number} | {batsman} vs {bowler}')
+
+                    # Detect new batsman (comes as separate entry when someone gets out)
+                    elif 'left handed bat' in commentary.lower() or 'right handed bat' in commentary.lower() or 'comes to the crease' in commentary.lower():
+                        logger.info(f'[POLL] 👤 NEW BATSMAN: {batsman}')
+                        batsman_payload = {
+                            'batsman': batsman,
+                            'commentary': commentary,
+                            'over': over_num,
+                            'timestamp': ball.get('timestamp')
+                        }
+                        send_webhook_event(match_id, 'batsman_entry', batsman_payload)
+
+                    # Detect other meaningful events (milestones, stats, rain, timeout, etc.)
+                    elif commentary.strip():
+                        logger.info(f'[POLL] 📊 DATA: {commentary}')
+                        data_payload = {
+                            'commentary': commentary,
+                            'over': over_num,
+                            'overNumber': over_number,
+                            'timestamp': ball.get('timestamp'),
+                            'batsman': batsman,
+                            'bowler': bowler
+                        }
+                        send_webhook_event(match_id, 'data', data_payload)
                     else:
-                        # Check if there's meaningful commentary (milestone, stat update, etc.)
-                        comm_text = ball.get('text', '').strip()
-                        if comm_text:
-                            # Send generic data webhook for stats, milestones, rain, etc.
-                            data_payload = {
-                                'commentary': comm_text,
-                                'over': over_num,
-                                'overNumber': over_number,
-                                'ballNumber': ball_number,
-                                'timestamp': ball.get('timestamp'),
-                                'players': players_data
-                            }
-                            send_webhook_event(match_id, 'data', data_payload)
-                            logger.info(f'[POLL] 📊 DATA SENT: {comm_text[:100]} at over {over_number}')
-                        else:
-                            logger.info(f'[POLL] ℹ️ No event (event="{event_type}") at over {over_number}')
+                        logger.info(f'[POLL] ℹ️ No meaningful event at over {over_number}')
 
             except Exception as e:
                 logger.error(f'[POLL] Error processing match {match_id}: {str(e)}')
