@@ -323,6 +323,17 @@ def auto_start_matches():
                                 matches_schedule[match_id]['status'] = 'live'
                                 save_match_schedule()  # ← Persist to disk
 
+                                # 🚀 SEND MATCH START WEBHOOK
+                                send_webhook_event(match_id, 'match_start', {
+                                    'match_title': match_details.get('match_title', ''),
+                                    'match_url': match_details.get('match_url', ''),
+                                    'team1': match_details.get('team1', ''),
+                                    'team2': match_details.get('team2', ''),
+                                    'start_time': start_time_str,
+                                    'timestamp': int(current_time_ist.timestamp() * 1000)
+                                })
+                                logger.info(f'[POLL] 🚀 Match start webhook sent for {match_id}')
+
                                 logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-started!')
                                 logger.info(f'[AUTO-START] Cricbuzz ID: {match_details["cricbuzz_id"]}')
                                 logger.info(f'[AUTO-START] Teams: {match_details["team1"]} vs {match_details["team2"]}')
@@ -650,6 +661,41 @@ def poll_live_matches():
                                     match_state[match_id] = {}
                                 match_state[match_id]['match_state'] = current_state
                             save_match_state()
+
+                        # 🏁 CHECK FOR INNINGS END
+                        match_details = miniscore.get('matchScoreDetails', {})
+                        innings_list = match_details.get('inningsScoreList', [])
+
+                        with state_lock:
+                            prev_innings_status = match_state.get(match_id, {}).get('innings_status', {})
+
+                        for innings_idx, innings in enumerate(innings_list):
+                            innings_id = f"innings_{innings_idx + 1}"
+                            curr_status = innings.get('inningsStatus')
+                            prev_status = prev_innings_status.get(innings_id)
+
+                            # Detect innings end transition
+                            if curr_status and curr_status != prev_status:
+                                if curr_status in ['All Out', 'Innings Break', 'DLS', 'Weather']:
+                                    send_webhook_event(match_id, 'innings_end', {
+                                        'innings_number': innings_idx + 1,
+                                        'innings_status': curr_status,
+                                        'team': innings.get('inningsTeam', {}).get('teamName', ''),
+                                        'runs': innings.get('runs', 0),
+                                        'wickets': innings.get('wickets', 0),
+                                        'overs': innings.get('overs', 0),
+                                        'timestamp': int(current_time_ist.timestamp() * 1000)
+                                    })
+                                    logger.info(f'[POLL] 🏁 Innings {innings_idx + 1} ended: {curr_status}')
+
+                                    # Update state
+                                    with state_lock:
+                                        if match_id not in match_state:
+                                            match_state[match_id] = {}
+                                        if 'innings_status' not in match_state[match_id]:
+                                            match_state[match_id]['innings_status'] = {}
+                                        match_state[match_id]['innings_status'][innings_id] = curr_status
+                                    save_match_state()
 
                         # Extract player details from miniscore for all events
                         players_data = {}
