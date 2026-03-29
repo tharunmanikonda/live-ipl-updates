@@ -8,9 +8,14 @@ import json
 from apscheduler.schedulers.background import BackgroundScheduler
 from threading import Lock
 from pytz import timezone
+import os
 
 # Timezone for IST (Indian Standard Time)
 IST = timezone('Asia/Kolkata')
+
+# Data persistence directory
+DATA_DIR = '/tmp/cricket_data'
+os.makedirs(DATA_DIR, exist_ok=True)
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +58,82 @@ def set_cache(key, data):
         'data': data,
         'timestamp': datetime.now().timestamp()
     }
+
+# ═══════════════════════════════════════════════════════════════
+# DATA PERSISTENCE FUNCTIONS (Save/Load from JSON files)
+# ═══════════════════════════════════════════════════════════════
+
+def save_webhooks():
+    """Save registered webhooks to JSON file"""
+    try:
+        filepath = os.path.join(DATA_DIR, 'webhooks.json')
+        with open(filepath, 'w') as f:
+            json.dump(webhooks, f, indent=2)
+        logger.debug(f'[PERSIST] Saved {len(webhooks)} webhook registrations')
+    except Exception as e:
+        logger.error(f'[PERSIST] Error saving webhooks: {str(e)}')
+
+def load_webhooks():
+    """Load registered webhooks from JSON file"""
+    global webhooks
+    try:
+        filepath = os.path.join(DATA_DIR, 'webhooks.json')
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                webhooks = json.load(f)
+            logger.info(f'[PERSIST] ✅ Loaded {len(webhooks)} webhook registrations from disk')
+        else:
+            logger.info(f'[PERSIST] No webhooks.json found (starting fresh)')
+    except Exception as e:
+        logger.error(f'[PERSIST] Error loading webhooks: {str(e)}')
+
+def save_match_schedule():
+    """Save match schedule to JSON file"""
+    try:
+        filepath = os.path.join(DATA_DIR, 'schedule.json')
+        with open(filepath, 'w') as f:
+            json.dump(matches_schedule, f, indent=2, default=str)
+        logger.debug(f'[PERSIST] Saved schedule for {len(matches_schedule)} matches')
+    except Exception as e:
+        logger.error(f'[PERSIST] Error saving schedule: {str(e)}')
+
+def load_match_schedule():
+    """Load match schedule from JSON file"""
+    global matches_schedule
+    try:
+        filepath = os.path.join(DATA_DIR, 'schedule.json')
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                matches_schedule = json.load(f)
+            logger.info(f'[PERSIST] ✅ Loaded schedule for {len(matches_schedule)} matches from disk')
+        else:
+            logger.info(f'[PERSIST] No schedule.json found (starting fresh)')
+    except Exception as e:
+        logger.error(f'[PERSIST] Error loading schedule: {str(e)}')
+
+def save_match_state():
+    """Save match state tracking to JSON file"""
+    try:
+        filepath = os.path.join(DATA_DIR, 'match_state.json')
+        with open(filepath, 'w') as f:
+            json.dump(match_state, f, indent=2, default=str)
+        logger.debug(f'[PERSIST] Saved state for {len(match_state)} matches')
+    except Exception as e:
+        logger.error(f'[PERSIST] Error saving match state: {str(e)}')
+
+def load_match_state():
+    """Load match state tracking from JSON file"""
+    global match_state
+    try:
+        filepath = os.path.join(DATA_DIR, 'match_state.json')
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                match_state = json.load(f)
+            logger.info(f'[PERSIST] ✅ Loaded state for {len(match_state)} matches from disk')
+        else:
+            logger.info(f'[PERSIST] No match_state.json found (starting fresh)')
+    except Exception as e:
+        logger.error(f'[PERSIST] Error loading match state: {str(e)}')
 
 def check_match_completion_from_api(match_id):
     """
@@ -225,6 +306,7 @@ def auto_start_matches():
                                 matches_schedule[match_id]['commentary_api_url'] = match_details['commentary_api_url']
                                 matches_schedule[match_id]['pagination_api_url'] = match_details['pagination_api_url']
                                 matches_schedule[match_id]['status'] = 'live'
+                                save_match_schedule()  # ← Persist to disk
 
                                 logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-started!')
                                 logger.info(f'[AUTO-START] Cricbuzz ID: {match_details["cricbuzz_id"]}')
@@ -430,6 +512,7 @@ def poll_live_matches():
                 with state_lock:
                     if match_id in matches_schedule:
                         matches_schedule[match_id]['status'] = 'completed'
+                        save_match_schedule()  # ← Persist to disk
                         logger.info(f'[AUTO] 🏁 Match {match_id} auto-marked COMPLETED (12 AM cutoff)')
                 continue  # Skip polling this match
 
@@ -475,6 +558,7 @@ def poll_live_matches():
                                 match_state[match_id]['match_state'] = 'toss'
                             else:
                                 match_state[match_id] = {'match_state': 'toss', 'balls': [], 'last_timestamp': 0}
+                        save_match_state()
 
                     # Update match state tracking
                     with state_lock:
@@ -482,6 +566,7 @@ def poll_live_matches():
                             match_state[match_id]['match_state'] = current_state
                         else:
                             match_state[match_id] = {'match_state': current_state, 'balls': [], 'last_timestamp': 0}
+                    save_match_state()
 
             except Exception as e:
                 logger.debug(f'[POLL] Error checking toss: {str(e)}')
@@ -522,6 +607,7 @@ def poll_live_matches():
                                 if match_id not in match_state:
                                     match_state[match_id] = {}
                                 match_state[match_id]['match_state'] = current_state
+                            save_match_state()
 
                         # Extract player details from miniscore for all events
                         players_data = {}
@@ -617,6 +703,7 @@ def poll_live_matches():
                         'last_timestamp': final_timestamp,
                         'match_state': match_state.get(match_id, {}).get('match_state', '')
                     }
+                    save_match_state()
 
                 # Process new balls and send webhooks for events
                 logger.info(f'[POLL] Processing {len(new_balls)} new balls for match {match_id}')
@@ -1365,6 +1452,7 @@ def register_webhook():
 
         if webhook_url not in webhooks[match_id]:
             webhooks[match_id].append(webhook_url)
+            save_webhooks()  # ← Persist to disk
 
         logger.info(f'[WEBHOOK] Registered webhook for match {match_id}: {webhook_url}')
 
@@ -1899,6 +1987,13 @@ if __name__ == '__main__':
     import os
     port = int(os.getenv('PORT', 3000))
     logger.info(f'🏏 Cricket Python proxy starting on port {port}')
+
+    # ✅ Load persisted data from disk
+    logger.info('[STARTUP] Loading persisted data...')
+    load_webhooks()
+    load_match_schedule()
+    load_match_state()
+    logger.info('[STARTUP] ✅ Data restoration complete')
 
     # Start background scheduler for polling
     scheduler = init_scheduler()
