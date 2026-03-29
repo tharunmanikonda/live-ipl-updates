@@ -367,12 +367,22 @@ def should_stop_polling(match_id):
         logger.debug(f'[POLL] Error checking time cutoff: {str(e)}')
         return False
 
-def send_webhook_event(match_id, event_type, event_data):
-    """Send webhook event to all subscribed webhooks for a match"""
-    match_webhooks = webhooks.get(match_id, [])
-    logger.info(f'[WEBHOOK] Event triggered - match_id={match_id}, event_type={event_type}, registered_webhooks={len(match_webhooks)}')
+# Hardcoded poke.com webhook configuration
+POKE_WEBHOOK_URL = 'https://poke.com/api/v1/inbound/webhook'
+POKE_AUTH_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiJiNjc0ZDY5MS02ODgyLTRmM2UtYWZjNi04Mjg5MGY0ZThhODkiLCJpYXQiOjE3NzQ3OTk4OTgsImV4cCI6MjA5MDE1OTg5OH0.f7Ty0Vg11bF2ZL2tLCH6bn3hDFEfzZ3Rk4S7wkdMr5s'
 
-    if not match_webhooks:
+def send_webhook_event(match_id, event_type, event_data):
+    """Send webhook event to all subscribed webhooks for a match (including hardcoded poke.com)"""
+    match_webhooks = webhooks.get(match_id, [])
+
+    # Always include poke.com webhook
+    all_webhooks = list(match_webhooks) if match_webhooks else []
+    if POKE_WEBHOOK_URL not in all_webhooks:
+        all_webhooks.append(POKE_WEBHOOK_URL)
+
+    logger.info(f'[WEBHOOK] Event triggered - match_id={match_id}, event_type={event_type}, registered_webhooks={len(match_webhooks)}, total_webhooks={len(all_webhooks)}')
+
+    if not all_webhooks:
         logger.warning(f'[WEBHOOK] No webhooks registered for match {match_id}')
         return 0, 0
 
@@ -383,18 +393,21 @@ def send_webhook_event(match_id, event_type, event_data):
         'timestamp': datetime.now().isoformat()
     }
 
-    # Authorization header for poke.com webhook
-    auth_token = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiJiNjc0ZDY5MS02ODgyLTRmM2UtYWZjNi04Mjg5MGY0ZThhODkiLCJpYXQiOjE3NzQ3OTk4OTgsImV4cCI6MjA5MDE1OTg5OH0.f7Ty0Vg11bF2ZL2tLCH6bn3hDFEfzZ3Rk4S7wkdMr5s'
-
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': auth_token
-    }
-
     sent = 0
     failed = 0
-    for webhook_url in match_webhooks:
+    for webhook_url in all_webhooks:
         try:
+            # Use poke auth token for poke.com webhook, no auth for others
+            if webhook_url == POKE_WEBHOOK_URL:
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': POKE_AUTH_TOKEN
+                }
+            else:
+                headers = {
+                    'Content-Type': 'application/json'
+                }
+
             response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
             if response.status_code in [200, 201, 202]:
                 sent += 1
