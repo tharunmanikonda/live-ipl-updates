@@ -137,10 +137,11 @@ def load_match_state():
 
 def check_match_completion_from_api(match_id):
     """
-    Check if match is complete from API response
+    Check if match is complete from API response (checks both comm and livescore endpoints)
     Returns True if match is complete, False otherwise
     """
     try:
+        # Check comm endpoint
         url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
         resp = requests.get(url, headers=HEADERS, timeout=5)
         if resp.status_code == 200:
@@ -149,13 +150,27 @@ def check_match_completion_from_api(match_id):
 
             # Check if match is marked as complete
             if header.get('complete') == True:
-                logger.info(f'[API] Match {match_id} is COMPLETE (from API)')
+                logger.info(f'[API] Match {match_id} is COMPLETE (comm endpoint)')
                 return True
 
             # Check state field
             state = header.get('state', '').lower()
-            if state == 'complete':
-                logger.info(f'[API] Match {match_id} state is COMPLETE (from API)')
+            if state in ['complete', 'completed']:
+                logger.info(f'[API] Match {match_id} is COMPLETE (comm endpoint state)')
+                return True
+
+        # Also check livescore endpoint for state
+        url = f'https://www.cricbuzz.com/api/mcenter/livescore/{match_id}'
+        resp = requests.get(url, headers=HEADERS, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            miniscore = data.get('miniscore', {})
+            match_details = miniscore.get('matchScoreDetails', {})
+
+            # Check state from livescore
+            state = match_details.get('state', '').lower()
+            if state in ['complete', 'completed']:
+                logger.info(f'[API] Match {match_id} is COMPLETE (livescore state)')
                 return True
 
         return False
