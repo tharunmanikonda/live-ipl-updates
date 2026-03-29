@@ -816,7 +816,22 @@ def poll_live_matches():
                         bowler = players_data.get('bowler', {}).get('name')
                         logger.info(f'[POLL] 🎯 EVENT SENT: {event_type} at over {over_number} | {batsman} vs {bowler}')
                     else:
-                        logger.info(f'[POLL] ℹ️ No event (event="{event_type}") at over {over_number}')
+                        # Check if there's meaningful commentary (milestone, stat update, etc.)
+                        comm_text = ball.get('text', '').strip()
+                        if comm_text:
+                            # Send generic data webhook for stats, milestones, rain, etc.
+                            data_payload = {
+                                'commentary': comm_text,
+                                'over': over_num,
+                                'overNumber': over_number,
+                                'ballNumber': ball_number,
+                                'timestamp': ball.get('timestamp'),
+                                'players': players_data
+                            }
+                            send_webhook_event(match_id, 'data', data_payload)
+                            logger.info(f'[POLL] 📊 DATA SENT: {comm_text[:100]} at over {over_number}')
+                        else:
+                            logger.info(f'[POLL] ℹ️ No event (event="{event_type}") at over {over_number}')
 
             except Exception as e:
                 logger.error(f'[POLL] Error processing match {match_id}: {str(e)}')
