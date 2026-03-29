@@ -217,33 +217,9 @@ matches_schedule = {
 }
 
 def poll_live_matches():
-    """Background job: Smart polling - only intensive when matches are live"""
+    """Background job: Smart polling - only fetches ball-by-ball for scheduled live matches"""
     try:
-        logger.info('[POLL] Checking for live matches...')
-
-        # Get live matches
-        response = requests.get('https://www.cricbuzz.com/cricket-match/live-scores', headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'lxml')
-
-        match_links = soup.find_all('a', class_=re.compile(r'block\s+mb-3'))
-        live_matches = {}
-
-        for match_link in match_links:
-            href = match_link.get('href', '')
-            if not href or '/live-cricket-scores/' not in href:
-                continue
-
-            match_id_match = re.search(r'/live-cricket-scores/(\d+)/', href)
-            if not match_id_match:
-                continue
-
-            match_id = match_id_match.group(1)
-            live_matches[match_id] = match_link.get('title', '')
-
-        logger.info(f'[POLL] Found {len(live_matches)} live matches on Cricbuzz')
-
-        # Check for matches marked as "live" in the schedule document
+        # Check for matches marked as "live" in the schedule document (NO Cricbuzz fetch)
         with state_lock:
             live_in_schedule = [mid for mid, data in matches_schedule.items() if data['status'] == 'live']
 
