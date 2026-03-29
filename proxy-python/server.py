@@ -1499,52 +1499,25 @@ def list_webhooks(match_id):
 
 @app.route('/webhook/send', methods=['POST'])
 def trigger_webhook_event():
-    """HTTP endpoint to manually send event to all registered webhooks for a match"""
+    """HTTP endpoint to manually send event to all registered webhooks (uses standard send_webhook_event)"""
     try:
         data = request.get_json()
         match_id = data.get('match_id')
-        event_type = data.get('event_type')  # 'ball', 'wicket', 'boundary', 'over', 'match_start', 'match_end'
+        event_type = data.get('event_type')
         event_data = data.get('event_data', {})
 
         if not match_id or not event_type:
             return jsonify({'error': 'match_id and event_type required'}), 400
 
-        # Get webhooks for this match
-        match_webhooks = webhooks.get(match_id, [])
-        if not match_webhooks:
-            return jsonify({'error': f'No webhooks registered for match {match_id}'}), 404
-
-        # Prepare webhook payload
-        payload = {
-            'match_id': match_id,
-            'event_type': event_type,
-            'event_data': event_data,
-            'timestamp': datetime.now().isoformat()
-        }
-
-        # Send to all webhooks
-        sent = 0
-        failed = 0
-        for webhook_url in match_webhooks:
-            try:
-                response = requests.post(webhook_url, json=payload, timeout=5)
-                if response.status_code in [200, 201, 202]:
-                    sent += 1
-                    logger.info(f'[WEBHOOK] Sent {event_type} event to {webhook_url}')
-                else:
-                    failed += 1
-                    logger.warning(f'[WEBHOOK] Failed to send to {webhook_url}: {response.status_code}')
-            except Exception as e:
-                failed += 1
-                logger.error(f'[WEBHOOK] Error sending to {webhook_url}: {str(e)}')
+        # Use the standard send_webhook_event function (includes poke.com automatically)
+        sent, failed = send_webhook_event(match_id, event_type, event_data)
 
         return jsonify({
             'status': 'sent',
             'match_id': match_id,
             'event_type': event_type,
             'sent': sent,
-            'failed': failed,
-            'total': len(match_webhooks)
+            'failed': failed
         })
 
     except Exception as e:
