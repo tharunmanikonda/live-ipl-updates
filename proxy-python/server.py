@@ -715,16 +715,72 @@ def poll_live_matches():
                         if ball_id not in prev_ball_ids:
                             new_balls.append(curr_ball)
 
-                    # Update state with balls and timestamp (preserve match_state)
+                    # Update state with balls and timestamp (preserve match_state and last_over_number)
                     # Use max_new_timestamp from livescore API response
                     final_timestamp = max_new_timestamp if max_new_timestamp > 0 else last_timestamp
                     logger.info(f'[POLL] Updating match {match_id} state: last_timestamp={final_timestamp}, new_balls={len(new_balls)}, total_balls={len(current_balls)}')
                     match_state[match_id] = {
                         'balls': current_balls,
                         'last_timestamp': final_timestamp,
-                        'match_state': match_state.get(match_id, {}).get('match_state', '')
+                        'match_state': match_state.get(match_id, {}).get('match_state', ''),
+                        'last_over_number': match_state.get(match_id, {}).get('last_over_number', 0)
                     }
                     save_match_state()
+
+                # 🏏 DETECT OVER COMPLETION AND SEND OVER SUMMARY
+                if current_balls:
+                    current_over = int(current_balls[-1].get('over_number', 0))
+                    last_over_number = match_state.get(match_id, {}).get('last_over_number', 0)
+
+                    if current_over > last_over_number and last_over_number > 0:
+                        # Over completed! Get all balls from completed over
+                        completed_over = last_over_number
+                        over_balls = [b for b in current_balls if int(b.get('over_number', 0)) == completed_over]
+
+                        if over_balls:
+                            # Calculate runs in this over
+                            runs_in_over = 0
+                            for b in over_balls:
+                                # Extract runs from commentary or event
+                                if b.get('event') == 'FOUR':
+                                    runs_in_over += 4
+                                elif b.get('event') == 'SIX':
+                                    runs_in_over += 6
+                                # Add runs from extras if available
+                                elif 'runs' in b:
+                                    runs_in_over += b.get('runs', 0)
+
+                            # Get wickets in this over
+                            over_wickets = [b for b in over_balls if b.get('event') == 'WICKET']
+
+                            # Get latest player data
+                            latest_player_data = over_balls[-1].get('players_data', {}) if over_balls else {}
+
+                            # Build over summary payload
+                            over_summary_payload = {
+                                'over_number': completed_over,
+                                'total_balls': len(over_balls),
+                                'runs_in_over': runs_in_over,
+                                'economy': round(runs_in_over / len(over_balls), 2) if over_balls else 0,
+                                'balls': over_balls,
+                                'bowler': latest_player_data.get('bowler', {}),
+                                'batting_team': {
+                                    'name': latest_player_data.get('batting_team'),
+                                    'score': latest_player_data.get('batting_team_score'),
+                                    'wickets': latest_player_data.get('batting_team_wickets')
+                                },
+                                'wickets': over_wickets,
+                                'timestamp': over_balls[-1].get('timestamp') if over_balls else 0
+                            }
+
+                            send_webhook_event(match_id, 'over_complete', over_summary_payload)
+                            logger.info(f'[POLL] 🏏 OVER {completed_over} COMPLETED: {runs_in_over} runs, {len(over_wickets)} wickets')
+
+                            # Update last_over_number in match_state
+                            with state_lock:
+                                if match_id in match_state:
+                                    match_state[match_id]['last_over_number'] = current_over
+                            save_match_state()
 
                 # Process new balls and send webhooks for events
                 logger.info(f'[POLL] Processing {len(new_balls)} new balls for match {match_id}')
