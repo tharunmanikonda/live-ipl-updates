@@ -301,11 +301,19 @@ def send_webhook_event(match_id, event_type, event_data):
         'timestamp': datetime.now().isoformat()
     }
 
+    # Authorization header for poke.com webhook
+    auth_token = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiJiNjc0ZDY5MS02ODgyLTRmM2UtYWZjNi04Mjg5MGY0ZThhODkiLCJpYXQiOjE3NzQ3OTk4OTgsImV4cCI6MjA5MDE1OTg5OH0.f7Ty0Vg11bF2ZL2tLCH6bn3hDFEfzZ3Rk4S7wkdMr5s'
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': auth_token
+    }
+
     sent = 0
     failed = 0
     for webhook_url in match_webhooks:
         try:
-            response = requests.post(webhook_url, json=payload, timeout=5)
+            response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
             if response.status_code in [200, 201, 202]:
                 sent += 1
                 logger.info(f'[WEBHOOK] ✅ Sent {event_type} to {webhook_url}')
