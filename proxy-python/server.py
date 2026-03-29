@@ -91,7 +91,10 @@ def auto_start_matches():
         logger.debug('[AUTO-START] Checking for matches that should start...')
 
         # Get current time in IST
-        current_time_ist = IST.localize(datetime.now(IST).replace(tzinfo=None))
+        # Convert UTC server time to IST
+        from datetime import timezone as tz_module
+        now_utc = datetime.now(tz_module.utc)
+        current_time_ist = now_utc.astimezone(IST)
 
         with state_lock:
             for match_id, match_data in matches_schedule.items():
@@ -154,8 +157,9 @@ def should_stop_polling(match_id):
         start_dt_ist = IST.localize(start_dt)
 
         # Get current time in IST
-        current_time_utc = datetime.now()
-        current_time_ist = IST.localize(datetime.now(IST).replace(tzinfo=None))
+        from datetime import timezone as tz_module
+        now_utc = datetime.now(tz_module.utc)
+        current_time_ist = now_utc.astimezone(IST)
 
         # Calculate next day 12:00 AM IST
         next_midnight_ist = start_dt_ist.replace(hour=0, minute=0, second=0) + timedelta(days=1)
