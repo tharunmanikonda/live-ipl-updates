@@ -1613,15 +1613,20 @@ def bulk_load_ipl_schedule():
 
                 start_time = f"{date_formatted} {time_formatted} IST"
 
+                # Determine status: if match date is in the past, mark as completed
+                today = dt.now().date()
+                match_date = date_obj.date()
+                status = 'completed' if match_date < today else 'scheduled'
+
                 matches_schedule[match_id] = {
                     'match_id': match_id,
                     'match_num': match_num,
                     'teams': match['teams'],
                     'date': match['date'],
                     'time': match['time'],
-                    'start_time': start_time,  # Add this!
+                    'start_time': start_time,
                     'venue': match['venue'],
-                    'status': 'scheduled',
+                    'status': status,
                     'created_at': datetime.now().isoformat(),
                     'webhooks_registered': 0
                 }
