@@ -398,15 +398,18 @@ def send_webhook_event(match_id, event_type, event_data):
     for webhook_url in all_webhooks:
         try:
             # Use poke auth token for poke.com webhook, no auth for others
-            if webhook_url == POKE_WEBHOOK_URL:
+            use_auth = webhook_url == POKE_WEBHOOK_URL
+            if use_auth:
                 headers = {
                     'Content-Type': 'application/json',
                     'Authorization': POKE_AUTH_TOKEN
                 }
+                logger.debug(f'[WEBHOOK] Using AUTH for {webhook_url} (matches POKE_WEBHOOK_URL)')
             else:
                 headers = {
                     'Content-Type': 'application/json'
                 }
+                logger.debug(f'[WEBHOOK] NO AUTH for {webhook_url} (POKE_WEBHOOK_URL={POKE_WEBHOOK_URL})')
 
             response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
             if response.status_code in [200, 201, 202]:
@@ -539,6 +542,17 @@ def poll_live_matches():
                 continue
 
             logger.info(f'[POLL] Checking match {match_id} (Cricbuzz ID: {cricbuzz_id}) for new events...')
+
+            # 🏁 CHECK IF MATCH IS COMPLETE - STOP POLLING IF IT IS
+            if check_match_completion_from_api(cricbuzz_id):
+                logger.info(f'[POLL] 🏁 Match {match_id} is COMPLETE - stopping polling')
+                with state_lock:
+                    if match_id in matches_schedule:
+                        matches_schedule[match_id]['status'] = 'completed'
+                        save_match_schedule()
+                    if match_id in polling_state['active_matches']:
+                        polling_state['active_matches'].discard(match_id)
+                continue
 
             # 🎲 CHECK FOR TOSS EVENT
             try:
