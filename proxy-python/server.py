@@ -367,9 +367,9 @@ def should_stop_polling(match_id):
         logger.debug(f'[POLL] Error checking time cutoff: {str(e)}')
         return False
 
-# Hardcoded poke.com webhook configuration
-POKE_WEBHOOK_URL = 'https://poke.com/api/v1/inbound/webhook'
-POKE_AUTH_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiJiNjc0ZDY5MS02ODgyLTRmM2UtYWZjNi04Mjg5MGY0ZThhODkiLCJpYXQiOjE3NzQ3OTk4OTgsImV4cCI6MjA5MDE1OTg5OH0.f7Ty0Vg11bF2ZL2tLCH6bn3hDFEfzZ3Rk4S7wkdMr5s'
+# Webhook configuration (can be overridden with env vars)
+POKE_WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://poke.com/api/v1/inbound/webhook')
+POKE_AUTH_TOKEN = os.getenv('WEBHOOK_AUTH', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiJiNjc0ZDY5MS02ODgyLTRmM2UtYWZjNi04Mjg5MGY0ZThhODkiLCJpYXQiOjE3NzQ3OTk4OTgsImV4cCI6MjA5MDE1OTg5OH0.f7Ty0Vg11bF2ZL2tLCH6bn3hDFEfzZ3Rk4S7wkdMr5s')
 
 def send_webhook_event(match_id, event_type, event_data):
     """Send webhook event to all subscribed webhooks for a match (including hardcoded poke.com)"""
