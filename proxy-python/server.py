@@ -572,6 +572,51 @@ def poll_live_matches():
             # 🏁 CHECK IF MATCH IS COMPLETE - STOP POLLING IF IT IS
             if check_match_completion_from_api(cricbuzz_id):
                 logger.info(f'[POLL] 🏁 Match {match_id} is COMPLETE - stopping polling')
+
+                # 🎯 SEND MATCH END WEBHOOK WITH WINNER
+                try:
+                    comm_url = f'https://www.cricbuzz.com/api/mcenter/comm/{cricbuzz_id}'
+                    comm_resp = requests.get(comm_url, headers=HEADERS, timeout=5)
+                    if comm_resp.status_code == 200:
+                        comm_data = comm_resp.json()
+                        header = comm_data.get('matchHeader', {})
+
+                        # Extract match end information
+                        match_title = header.get('matchDescription', '')
+                        match_status = header.get('status', '')
+                        match_result = header.get('matchResult', {})
+
+                        # Get winner and result details
+                        winner_name = match_result.get('winnerName', '')
+                        result_type = match_result.get('resultType', '')  # e.g., "runs", "wickets", "super_over"
+                        result_value = match_result.get('winByRuns', match_result.get('winByWkts', ''))
+
+                        # Get final scores
+                        team_info_list = header.get('matchTeamInfo', [])
+                        team1_info = team_info_list[0] if len(team_info_list) > 0 else {}
+                        team2_info = team_info_list[1] if len(team_info_list) > 1 else {}
+
+                        team1_name = team1_info.get('teamName', '')
+                        team2_name = team2_info.get('teamName', '')
+                        team1_score = team1_info.get('teamScore', {}).get('runs', 0)
+                        team2_score = team2_info.get('teamScore', {}).get('runs', 0)
+
+                        send_webhook_event(match_id, 'match_end', {
+                            'match_title': match_title,
+                            'status': match_status,
+                            'winner': winner_name,
+                            'result_type': result_type,
+                            'result_value': result_value,
+                            'team1': team1_name,
+                            'team1_score': team1_score,
+                            'team2': team2_name,
+                            'team2_score': team2_score,
+                            'timestamp': int(current_time_ist.timestamp() * 1000)
+                        })
+                        logger.info(f'[POLL] 🏆 Match end webhook sent: {winner_name} won!')
+                except Exception as e:
+                    logger.debug(f'[POLL] Error sending match_end webhook: {str(e)}')
+
                 with state_lock:
                     if match_id in matches_schedule:
                         matches_schedule[match_id]['status'] = 'completed'
