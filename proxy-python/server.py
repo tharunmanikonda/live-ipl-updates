@@ -523,11 +523,46 @@ def poll_live_matches():
                                     match_state[match_id] = {}
                                 match_state[match_id]['match_state'] = current_state
 
+                        # Extract player details from miniscore for all events
+                        players_data = {}
+                        if miniscore:
+                            batter_striker = miniscore.get('batsmanStriker', {})
+                            batter_non_striker = miniscore.get('batsmanNonStriker', {})
+                            bowler_striker = miniscore.get('bowlerStriker', {})
+                            bat_team = miniscore.get('batTeam', {})
+                            bowl_team_info = miniscore.get('matchScoreDetails', {}).get('matchTeamInfo', [{}])[0]
+
+                            players_data = {
+                                'batsman_striker': {
+                                    'name': batter_striker.get('batName'),
+                                    'runs': batter_striker.get('batRuns'),
+                                    'balls': batter_striker.get('batBalls'),
+                                    'fours': batter_striker.get('batFours'),
+                                    'sixes': batter_striker.get('batSixes')
+                                },
+                                'batsman_non_striker': {
+                                    'name': batter_non_striker.get('batName'),
+                                    'runs': batter_non_striker.get('batRuns'),
+                                    'balls': batter_non_striker.get('batBalls')
+                                },
+                                'bowler': {
+                                    'name': bowler_striker.get('bowlName'),
+                                    'runs': bowler_striker.get('bowlRuns'),
+                                    'overs': bowler_striker.get('bowlOvs'),
+                                    'wickets': bowler_striker.get('bowlWkts')
+                                },
+                                'batting_team': bat_team.get('batTeamName'),
+                                'batting_team_score': bat_team.get('teamScore'),
+                                'batting_team_wickets': bat_team.get('teamWkts')
+                            }
+
                         # Find new commentary since last_timestamp
                         for item in commentary_data:
                             item_timestamp = item.get('timestamp', 0)
                             if item_timestamp > last_timestamp:
                                 max_new_timestamp = max(max_new_timestamp, item_timestamp)
+                                # Store players data with each item
+                                item['players_data'] = players_data
 
                         if max_new_timestamp > 0:
                             logger.info(f'[POLL] Found new commentary, latest timestamp: {max_new_timestamp}')
@@ -558,7 +593,8 @@ def poll_live_matches():
                             'timestamp': item.get('timestamp', 0),
                             'event': item.get('event', 'NONE'),
                             'innings': item.get('inningsId'),
-                            'batTeam': item.get('batTeamName', '')
+                            'batTeam': item.get('batTeamName', ''),
+                            'players_data': item.get('players_data', {})  # ← Include player details
                         })
 
                 # Compare with previous state
@@ -590,21 +626,31 @@ def poll_live_matches():
                     ball_number = ball.get('ball_number')
                     commentary = ball.get('text', '')[:100]
                     event_type = ball.get('event', '')  # Structured event from API
+                    players_data = ball.get('players_data', {})
 
                     logger.info(f'[POLL] Ball at over {over_number}: event="{event_type}" | commentary: {commentary}')
 
                     # Simple logic: If API has event → Send webhook (timestamp prevents duplicates)
                     if event_type and event_type != 'NONE':
                         logger.info(f'[POLL] 🎯 EVENT DETECTED: {event_type}')
-                        send_webhook_event(match_id, 'event', {
+
+                        # Build webhook payload with all details
+                        payload = {
                             'event': event_type,
                             'over': over_num,
                             'overNumber': over_number,
                             'ballNumber': ball_number,
                             'commentary': ball.get('text', '')[:500],
-                            'timestamp': ball.get('timestamp')
-                        })
-                        logger.info(f'[POLL] 🎯 EVENT SENT: {event_type} at over {over_number}')
+                            'timestamp': ball.get('timestamp'),
+                            'players': players_data  # ← Include player details
+                        }
+
+                        send_webhook_event(match_id, 'event', payload)
+
+                        # Log who was involved in the event
+                        batsman = players_data.get('batsman_striker', {}).get('name')
+                        bowler = players_data.get('bowler', {}).get('name')
+                        logger.info(f'[POLL] 🎯 EVENT SENT: {event_type} at over {over_number} | {batsman} vs {bowler}')
                     else:
                         logger.info(f'[POLL] ℹ️ No event (event="{event_type}") at over {over_number}')
 
