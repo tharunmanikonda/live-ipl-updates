@@ -1501,12 +1501,32 @@ def bulk_load_ipl_schedule():
                 match_num = match['match_num']
                 match_id = f"ipl2026_m{match_num}"
 
+                # Generate start_time in format "2026-03-29 19:00 IST"
+                date_str = match['date']  # e.g., "29-MAR-26"
+                time_str = match['time']  # e.g., "7:30 PM IST"
+
+                # Parse date: "29-MAR-26" → "2026-03-29"
+                from datetime import datetime as dt
+                date_obj = dt.strptime(date_str, "%d-%b-%y")
+                date_formatted = date_obj.strftime("%Y-%m-%d")
+
+                # Parse time: "7:30 PM IST" → "19:30"
+                time_part = time_str.split()[0] + " " + time_str.split()[1]  # "7:30 PM"
+                try:
+                    time_obj = dt.strptime(time_part, "%I:%M %p")
+                    time_formatted = time_obj.strftime("%H:%M")
+                except:
+                    time_formatted = "19:30"  # Default to 7:30 PM if parsing fails
+
+                start_time = f"{date_formatted} {time_formatted} IST"
+
                 matches_schedule[match_id] = {
                     'match_id': match_id,
                     'match_num': match_num,
                     'teams': match['teams'],
                     'date': match['date'],
                     'time': match['time'],
+                    'start_time': start_time,  # Add this!
                     'venue': match['venue'],
                     'status': 'scheduled',
                     'created_at': datetime.now().isoformat(),
