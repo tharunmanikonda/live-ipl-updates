@@ -82,6 +82,48 @@ def check_match_completion_from_api(match_id):
         logger.debug(f'[API] Error checking completion: {str(e)}')
         return False
 
+def auto_start_matches():
+    """
+    Background job: Auto-start matches when their scheduled start time arrives
+    Marks matches as "live" automatically at IST start time
+    """
+    try:
+        logger.debug('[AUTO-START] Checking for matches that should start...')
+
+        # Get current time in IST
+        current_time_ist = IST.localize(datetime.now(IST).replace(tzinfo=None))
+
+        with state_lock:
+            for match_id, match_data in matches_schedule.items():
+                # Only check scheduled matches
+                if match_data.get('status') != 'scheduled':
+                    continue
+
+                start_time_str = match_data.get('start_time', '')
+                if not start_time_str:
+                    continue
+
+                try:
+                    # Parse start time as IST
+                    time_part = start_time_str.split(' IST')[0]
+                    start_dt = datetime.fromisoformat(time_part)
+                    start_dt_ist = IST.localize(start_dt)
+
+                    # If current time >= start time, mark as LIVE
+                    if current_time_ist >= start_dt_ist:
+                        # Check if we haven't already started this match
+                        if match_data.get('status') == 'scheduled':
+                            matches_schedule[match_id]['status'] = 'live'
+                            logger.info(f'[AUTO-START] 🚀 Match {match_id} auto-marked as LIVE at {start_dt_ist}')
+                            logger.info(f'[AUTO-START] Teams: {match_data.get("teams")} | Polling will start in next cycle')
+
+                except Exception as e:
+                    logger.debug(f'[AUTO-START] Error processing {match_id}: {str(e)}')
+                    continue
+
+    except Exception as e:
+        logger.error(f'[AUTO-START] Error in auto_start_matches: {str(e)}')
+
 def should_stop_polling(match_id):
     """
     Check if polling should stop for this match
@@ -1557,10 +1599,19 @@ def server_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
 def init_scheduler():
-    """Initialize background scheduler - polls ONLY during scheduled match times"""
+    """Initialize background scheduler - auto-starts matches and polls live matches"""
     scheduler = BackgroundScheduler()
 
-    # Add intensive polling job - runs every 1 minute
+    # Auto-start matches job - runs every 30 seconds to check if matches should start
+    scheduler.add_job(
+        auto_start_matches,
+        'interval',
+        seconds=30,
+        id='auto_start',
+        name='Auto-Start Matches (every 30s - marks matches LIVE at start time)'
+    )
+
+    # Polling job - runs every 1 minute
     # Only polls when matches are marked as "live" in the schedule document
     scheduler.add_job(
         poll_live_matches,
@@ -1572,12 +1623,14 @@ def init_scheduler():
 
     scheduler.start()
     logger.info('[SCHEDULER] ✅ Smart polling initialized!')
-    logger.info('[SCHEDULER] Polling strategy: Only when matches are marked LIVE in schedule')
-    logger.info('[SCHEDULER] How to use:')
-    logger.info('[SCHEDULER]   1. When match starts: POST /schedule/update-status → status: "live"')
-    logger.info('[SCHEDULER]   2. Polling auto-starts every 1 minute')
-    logger.info('[SCHEDULER]   3. When match ends: POST /schedule/update-status → status: "completed"')
-    logger.info('[SCHEDULER]   4. Polling auto-stops')
+    logger.info('[SCHEDULER] Auto-start: Matches marked LIVE at scheduled start time (IST)')
+    logger.info('[SCHEDULER] Auto-stop: Matches stop polling at 12 AM IST or when API detects completion')
+    logger.info('[SCHEDULER] Flow:')
+    logger.info('[SCHEDULER]   1. Register webhook: POST /webhook/register')
+    logger.info('[SCHEDULER]   2. At start time: Automatically marked as LIVE')
+    logger.info('[SCHEDULER]   3. Polling auto-starts every 1 minute')
+    logger.info('[SCHEDULER]   4. Events sent to webhook (toss, 4s, 6s, wickets, etc)')
+    logger.info('[SCHEDULER]   5. At 12 AM IST: Auto-stop polling')
     return scheduler
 
 if __name__ == '__main__':
