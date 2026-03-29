@@ -50,12 +50,45 @@ def set_cache(key, data):
         'timestamp': datetime.now().timestamp()
     }
 
+def check_match_completion_from_api(match_id):
+    """
+    Check if match is complete from API response
+    Returns True if match is complete, False otherwise
+    """
+    try:
+        url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
+        resp = requests.get(url, headers=HEADERS, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            header = data.get('matchHeader', {})
+
+            # Check if match is marked as complete
+            if header.get('complete') == True:
+                logger.info(f'[API] Match {match_id} is COMPLETE (from API)')
+                return True
+
+            # Check state field
+            state = header.get('state', '').lower()
+            if state == 'complete':
+                logger.info(f'[API] Match {match_id} state is COMPLETE (from API)')
+                return True
+
+        return False
+    except Exception as e:
+        logger.debug(f'[API] Error checking completion: {str(e)}')
+        return False
+
 def should_stop_polling(match_id):
     """
-    Check if polling should stop for this match (12 AM cutoff)
+    Check if polling should stop for this match
+    1. Check API if match is complete
+    2. Fallback to 12 AM cutoff
     """
-    from datetime import datetime, time
+    # Primary: Check API
+    if check_match_completion_from_api(match_id):
+        return True
 
+    # Fallback: 12 AM cutoff
     try:
         # Get match start time from schedule
         with state_lock:
@@ -191,6 +224,48 @@ def poll_live_matches():
 
             logger.info(f'[POLL] Checking match {match_id} for new events...')
 
+            # 🎲 CHECK FOR TOSS EVENT
+            try:
+                comm_url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
+                comm_resp = requests.get(comm_url, headers=HEADERS, timeout=5)
+                if comm_resp.status_code == 200:
+                    comm_data = comm_resp.json()
+                    header = comm_data.get('matchHeader', {})
+
+                    # Check toss state
+                    current_state = header.get('state', '').lower()
+
+                    # Get previous state from match_state
+                    with state_lock:
+                        prev_state = match_state.get(match_id, {}).get('match_state', '')
+
+                    # Detect toss event (transition to "Toss" state)
+                    if current_state == 'toss' and prev_state != 'toss':
+                        toss_info = header.get('tossResults', {})
+                        send_webhook_event(match_id, 'toss', {
+                            'toss_winner': toss_info.get('tossWinnerName', ''),
+                            'decision': toss_info.get('decision', ''),
+                            'status': header.get('status', '')
+                        })
+                        logger.info(f'[POLL] 🎲 Toss detected: {toss_info.get("tossWinnerName")} opted to {toss_info.get("decision")}')
+
+                        # Update state
+                        with state_lock:
+                            if match_id in match_state:
+                                match_state[match_id]['match_state'] = 'toss'
+                            else:
+                                match_state[match_id] = {'match_state': 'toss', 'balls': [], 'last_timestamp': 0}
+
+                    # Update match state tracking
+                    with state_lock:
+                        if match_id in match_state:
+                            match_state[match_id]['match_state'] = current_state
+                        else:
+                            match_state[match_id] = {'match_state': current_state, 'balls': [], 'last_timestamp': 0}
+
+            except Exception as e:
+                logger.debug(f'[POLL] Error checking toss: {str(e)}')
+
             # Get ball-by-ball commentary with smart timestamp tracking
             try:
                 commentary_data = []
@@ -237,7 +312,7 @@ def poll_live_matches():
 
                 # Compare with previous state
                 with state_lock:
-                    prev_state = match_state.get(match_id, {'balls': []})
+                    prev_state = match_state.get(match_id, {'balls': [], 'match_state': ''})
                     prev_balls = prev_state.get('balls', [])
 
                     # Find new balls
@@ -246,10 +321,11 @@ def poll_live_matches():
                         if curr_ball not in prev_balls:
                             new_balls.append(curr_ball)
 
-                    # Update state with balls and timestamp
+                    # Update state with balls and timestamp (preserve match_state)
                     match_state[match_id] = {
                         'balls': current_balls,
-                        'last_timestamp': query_timestamp if current_balls else 0
+                        'last_timestamp': query_timestamp if current_balls else 0,
+                        'match_state': match_state.get(match_id, {}).get('match_state', '')
                     }
 
                 # Process new balls and send webhooks for filtered events
