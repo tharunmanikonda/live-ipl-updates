@@ -7,6 +7,10 @@ import logging
 import json
 from apscheduler.schedulers.background import BackgroundScheduler
 from threading import Lock
+from pytz import timezone
+
+# Timezone for IST (Indian Standard Time)
+IST = timezone('Asia/Kolkata')
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -82,13 +86,13 @@ def should_stop_polling(match_id):
     """
     Check if polling should stop for this match
     1. Check API if match is complete
-    2. Fallback to 12 AM cutoff
+    2. Fallback to 12 AM IST cutoff
     """
     # Primary: Check API
     if check_match_completion_from_api(match_id):
         return True
 
-    # Fallback: 12 AM cutoff
+    # Fallback: 12 AM IST cutoff
     try:
         # Get match start time from schedule
         with state_lock:
@@ -101,14 +105,21 @@ def should_stop_polling(match_id):
             return False
 
         # Parse start time (format: "2026-03-29 19:00" IST)
-        start_dt = datetime.fromisoformat(start_time_str.split(' IST')[0])
+        time_part = start_time_str.split(' IST')[0]
+        start_dt = datetime.fromisoformat(time_part)
 
-        # If current time is past next day 12:00 AM, stop polling
-        current_time = datetime.now()
-        next_midnight = start_dt.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+        # Create IST-aware datetime
+        start_dt_ist = IST.localize(start_dt)
 
-        if current_time >= next_midnight:
-            logger.info(f'[POLL] ⏰ Past 12 AM cutoff for match {match_id} - stopping polling')
+        # Get current time in IST
+        current_time_utc = datetime.now()
+        current_time_ist = IST.localize(datetime.now(IST).replace(tzinfo=None))
+
+        # Calculate next day 12:00 AM IST
+        next_midnight_ist = start_dt_ist.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+
+        if current_time_ist >= next_midnight_ist:
+            logger.info(f'[POLL] ⏰ Past 12 AM IST cutoff for match {match_id} - stopping polling')
             return True
 
         return False
