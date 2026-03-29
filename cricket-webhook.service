@@ -1,0 +1,19 @@
+[Unit]
+Description=Cricket Live Webhook Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/live-ipl-updates
+Environment="WEBHOOK_URL=https://poke.com/api/v1/inbound/webhook"
+Environment="WEBHOOK_AUTH=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiJiNjc0ZDY5MS02ODgyLTRmM2UtYWZjNi04Mjg5MGY0ZThhODkiLCJpYXQiOjE3NzQ3OTk4OTgsImV4cCI6MjA5MDE1OTg5OH0.f7Ty0Vg11bF2ZL2tLCH6bn3hDFEfzZ3Rk4S7wkdMr5s"
+Environment="PORT=6666"
+ExecStart=/usr/bin/python3 proxy-python/server.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/tmp/cricket_server.log
+StandardError=append:/tmp/cricket_server.log
+
+[Install]
+WantedBy=multi-user.target
