@@ -594,39 +594,6 @@ def poll_live_matches():
                         })
                         logger.info(f'[POLL] 🎯 EVENT: {event_type} at over {over_number} | {commentary[:50]}')
 
-                    # Check for over boundaries in commentary
-                    if 'end of' in text and 'over' in text:
-                        over_match = re.search(r'end of (\d+(?:\.\d+)?)', text)
-                        if over_match:
-                            send_webhook_event(match_id, 'over_end', {
-                                'over': over_match.group(1),
-                                'ball': ball['ball'],
-                                'commentary': ball['text'][:500]
-                            })
-                            logger.info(f'[POLL] Detected over end: {over_match.group(1)}')
-
-                    # Check for innings events
-                    if 'innings' in text:
-                        if 'end of' in text or 'ends' in text:
-                            send_webhook_event(match_id, 'innings_end', {
-                                'innings': ball['innings'],
-                                'commentary': ball['text'][:500]
-                            })
-                            logger.info(f'[POLL] Detected innings end - Innings {ball["innings"]}')
-                        elif 'start' in text:
-                            send_webhook_event(match_id, 'innings_start', {
-                                'innings': ball['innings'],
-                                'commentary': ball['text'][:500]
-                            })
-                            logger.info(f'[POLL] Detected innings start - Innings {ball["innings"]}')
-
-                    # Check for match end in commentary (send event but don't rely on it for stopping)
-                    if 'match' in text and ('won' in text or 'end' in text or 'finished' in text):
-                        send_webhook_event(match_id, 'match_end', {
-                            'commentary': ball['text'][:500]
-                        })
-                        logger.info(f'[POLL] Detected match end in commentary')
-
             except Exception as e:
                 logger.error(f'[POLL] Error processing match {match_id}: {str(e)}')
                 continue
