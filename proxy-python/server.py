@@ -746,10 +746,14 @@ def poll_live_matches():
 
                 # Extract ball events from livescore commentary
                 current_balls = []
+                logger.debug(f'[POLL] Processing {len(commentary_data)} commentary items for balls...')
                 for item in commentary_data:
+                    comm_type = item.get('commType', 'unknown')
+                    logger.debug(f'[POLL] Item type: {comm_type}, event: {item.get("eventType", "none")}, ball: {item.get("ballMetric", "none")}')
+
                     # Skip non-commentary items (videos, snippets, forecasts, etc.)
-                    if item.get('commType') != 'commentary':
-                        logger.debug(f'[POLL] Skipping {item.get("commType")}: {item.get("eventType", "unknown")}')
+                    if comm_type != 'commentary':
+                        logger.debug(f'[POLL] Skipping {comm_type}: {item.get("eventType", "unknown")}')
                         continue
 
                     comm_text = item.get('commText', '')
