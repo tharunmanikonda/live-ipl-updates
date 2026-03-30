@@ -26,8 +26,8 @@ def fetch_with_playwright(url, wait_selector=None, scroll_to_bottom=False):
     logger.info('[DEBUG] Playwright fetch requested but using fallback method')
     return None
 
-# Webhook storage (in-memory for now, use database in production)
-webhooks = {}  # {match_id: [webhook_urls]}
+# Note: Webhooks are now configured globally via POKE_WEBHOOK_URL env var
+# All cricket events are sent to this single webhook endpoint
 
 # State tracking for live matches (to detect new events)
 match_state = {}  # {match_id: {balls: [...], last_over: X, last_innings: X, last_timestamp: X}}
@@ -63,29 +63,7 @@ def set_cache(key, data):
 # DATA PERSISTENCE FUNCTIONS (Save/Load from JSON files)
 # ═══════════════════════════════════════════════════════════════
 
-def save_webhooks():
-    """Save registered webhooks to JSON file"""
-    try:
-        filepath = os.path.join(DATA_DIR, 'webhooks.json')
-        with open(filepath, 'w') as f:
-            json.dump(webhooks, f, indent=2)
-        logger.debug(f'[PERSIST] Saved {len(webhooks)} webhook registrations')
-    except Exception as e:
-        logger.error(f'[PERSIST] Error saving webhooks: {str(e)}')
-
-def load_webhooks():
-    """Load registered webhooks from JSON file"""
-    global webhooks
-    try:
-        filepath = os.path.join(DATA_DIR, 'webhooks.json')
-        if os.path.exists(filepath):
-            with open(filepath, 'r') as f:
-                webhooks = json.load(f)
-            logger.info(f'[PERSIST] ✅ Loaded {len(webhooks)} webhook registrations from disk')
-        else:
-            logger.info(f'[PERSIST] No webhooks.json found (starting fresh)')
-    except Exception as e:
-        logger.error(f'[PERSIST] Error loading webhooks: {str(e)}')
+# Webhook persistence removed - using global POKE_WEBHOOK_URL configuration
 
 def save_match_schedule():
     """Save match schedule to JSON file"""
@@ -323,14 +301,6 @@ def auto_start_matches():
                                 matches_schedule[match_id]['status'] = 'live'
                                 save_match_schedule()  # ← Persist to disk
 
-                                # 🔗 AUTO-REGISTER WEBHOOK FOR THIS MATCH
-                                if match_id not in webhooks:
-                                    webhooks[match_id] = []
-                                if POKE_WEBHOOK_URL not in webhooks[match_id]:
-                                    webhooks[match_id].append(POKE_WEBHOOK_URL)
-                                    save_webhooks()
-                                    logger.info(f'[AUTO-START] 🔗 Auto-registered webhook for {match_id}')
-
                                 # 🚀 SEND MATCH START WEBHOOK
                                 send_webhook_event(match_id, 'match_start', {
                                     'match_title': match_details.get('match_title', ''),
@@ -406,19 +376,10 @@ POKE_WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://poke.com/api/v1/inbound/web
 POKE_AUTH_TOKEN = os.getenv('WEBHOOK_AUTH', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjBmOWZjZS1jZTNhLTQ0NzEtOTUzOS02ZTZjOGRhODEwNGIiLCJqdGkiOiI0ZDY2MTBjMy03ZTczLTQzMGItODc1Yy1jNzUxMmUxMWI4NmYiLCJpYXQiOjE3NzQ4ODQ2MzgsImV4cCI6MjA5MDI0NDYzOH0.Z0OWRx1jThCNNCloF1QiB9-a8hHtSQNLHA7tzIYGubs')
 
 def send_webhook_event(match_id, event_type, event_data):
-    """Send webhook event to all subscribed webhooks for a match (including hardcoded poke.com)"""
-    match_webhooks = webhooks.get(match_id, [])
-
-    # Always include poke.com webhook
-    all_webhooks = list(match_webhooks) if match_webhooks else []
-    if POKE_WEBHOOK_URL not in all_webhooks:
-        all_webhooks.append(POKE_WEBHOOK_URL)
-
-    logger.info(f'[WEBHOOK] Event triggered - match_id={match_id}, event_type={event_type}, registered_webhooks={len(match_webhooks)}, total_webhooks={len(all_webhooks)}')
-
-    if not all_webhooks:
-        logger.warning(f'[WEBHOOK] No webhooks registered for match {match_id}')
-        return 0, 0
+    """Send webhook event to poke.com"""
+    if not POKE_WEBHOOK_URL:
+        logger.warning(f'[WEBHOOK] POKE_WEBHOOK_URL not configured')
+        return 0, 1
 
     payload = {
         'match_id': match_id,
@@ -427,36 +388,22 @@ def send_webhook_event(match_id, event_type, event_data):
         'timestamp': datetime.now().isoformat()
     }
 
-    sent = 0
-    failed = 0
-    for webhook_url in all_webhooks:
-        try:
-            # Use poke auth token for poke.com webhook, no auth for others
-            use_auth = webhook_url == POKE_WEBHOOK_URL
-            if use_auth:
-                headers = {
-                    'Content-Type': 'application/json',
-                    'Authorization': POKE_AUTH_TOKEN
-                }
-                logger.debug(f'[WEBHOOK] Using AUTH for {webhook_url} (matches POKE_WEBHOOK_URL)')
-            else:
-                headers = {
-                    'Content-Type': 'application/json'
-                }
-                logger.debug(f'[WEBHOOK] NO AUTH for {webhook_url} (POKE_WEBHOOK_URL={POKE_WEBHOOK_URL})')
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': POKE_AUTH_TOKEN
+    }
 
-            response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
-            if response.status_code in [200, 201, 202]:
-                sent += 1
-                logger.info(f'[WEBHOOK] ✅ Sent {event_type} to {webhook_url}')
-            else:
-                failed += 1
-                logger.warning(f'[WEBHOOK] ❌ Failed to send to {webhook_url}: {response.status_code}')
-        except Exception as e:
-            failed += 1
-            logger.error(f'[WEBHOOK] ❌ Error sending to {webhook_url}: {str(e)}')
-
-    return sent, failed
+    try:
+        response = requests.post(POKE_WEBHOOK_URL, json=payload, headers=headers, timeout=5)
+        if response.status_code in [200, 201, 202]:
+            logger.info(f'[WEBHOOK] ✅ Sent {event_type} for {match_id}')
+            return 1, 0
+        else:
+            logger.warning(f'[WEBHOOK] ❌ Failed ({response.status_code}): {event_type} for {match_id}')
+            return 0, 1
+    except Exception as e:
+        logger.error(f'[WEBHOOK] ❌ Error: {str(e)}')
+        return 0, 1
 
 # Track polling state
 polling_state = {
@@ -538,16 +485,7 @@ def poll_live_matches():
             return  # No matches to poll
 
         logger.info(f'[POLL] 🔥 Found {len(live_in_schedule)} match(es) marked as LIVE - polling now...')
-
-        # Only poll for matches that are marked as live AND have webhooks
-        matches_to_poll = [mid for mid in live_in_schedule if mid in webhooks]
-
-        if len(matches_to_poll) == 0:
-            logger.debug(f'[POLL] ℹ️  {len(live_in_schedule)} match(es) live but no webhooks registered - waiting...')
-            return  # No webhooks for live matches
-
-        logger.info(f'[POLL] ✅ Polling {len(matches_to_poll)} match(es) with registered webhooks')
-        for mid in matches_to_poll:
+        for mid in live_in_schedule:
             match_info = matches_schedule.get(mid, {})
             match_title = match_info.get('title', mid)
             logger.info(f'[POLL] 📺 Match to poll: {mid} - {match_title}')
@@ -558,7 +496,7 @@ def poll_live_matches():
             polling_state['active_matches'] = set(matches_to_poll)
 
         # Check each match marked as live in schedule for new events
-        for match_id in matches_to_poll:
+        for match_id in live_in_schedule:
             # This match is already confirmed to have webhooks and be marked live
 
             # ⏰ Check if we've passed 12 AM cutoff for this match
@@ -1672,73 +1610,7 @@ def get_points_table(series_id):
         logger.error(f'Error fetching points table for series {series_id}: {str(e)}')
         return jsonify({'error': f'Failed to fetch points table: {str(e)}', 'standings': []}), 500
 
-@app.route('/webhook/register', methods=['POST'])
-def register_webhook():
-    """Register webhook for match events"""
-    try:
-        data = request.get_json()
-        webhook_url = data.get('webhook_url')
-        match_id = data.get('match_id')
-
-        if not webhook_url or not match_id:
-            return jsonify({'error': 'webhook_url and match_id required'}), 400
-
-        # Store webhook
-        if match_id not in webhooks:
-            webhooks[match_id] = []
-
-        if webhook_url not in webhooks[match_id]:
-            webhooks[match_id].append(webhook_url)
-            save_webhooks()  # ← Persist to disk
-
-        logger.info(f'[WEBHOOK] Registered webhook for match {match_id}: {webhook_url}')
-
-        return jsonify({
-            'status': 'registered',
-            'match_id': match_id,
-            'webhook_url': webhook_url,
-            'total_webhooks': len(webhooks[match_id])
-        }), 201
-
-    except Exception as e:
-        logger.error(f'Error registering webhook: {str(e)}')
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/webhook/list/<match_id>', methods=['GET'])
-def list_webhooks(match_id):
-    """List webhooks for a match"""
-    return jsonify({
-        'match_id': match_id,
-        'webhooks': webhooks.get(match_id, []),
-        'count': len(webhooks.get(match_id, []))
-    })
-
-@app.route('/webhook/send', methods=['POST'])
-def trigger_webhook_event():
-    """HTTP endpoint to manually send event to all registered webhooks (uses standard send_webhook_event)"""
-    try:
-        data = request.get_json()
-        match_id = data.get('match_id')
-        event_type = data.get('event_type')
-        event_data = data.get('event_data', {})
-
-        if not match_id or not event_type:
-            return jsonify({'error': 'match_id and event_type required'}), 400
-
-        # Use the standard send_webhook_event function (includes poke.com automatically)
-        sent, failed = send_webhook_event(match_id, event_type, event_data)
-
-        return jsonify({
-            'status': 'sent',
-            'match_id': match_id,
-            'event_type': event_type,
-            'sent': sent,
-            'failed': failed
-        })
-
-    except Exception as e:
-        logger.error(f'Error sending webhook event: {str(e)}')
-        return jsonify({'error': str(e)}), 500
+# Webhook endpoints removed - webhooks are now sent globally to POKE_WEBHOOK_URL for all live matches
 
 @app.route('/polling/status', methods=['GET'])
 def polling_status():
@@ -2200,7 +2072,6 @@ if __name__ == '__main__':
 
     # ✅ Load persisted data from disk
     logger.info('[STARTUP] Loading persisted data...')
-    load_webhooks()
     load_match_schedule()
     load_match_state()
     logger.info('[STARTUP] ✅ Data restoration complete')
