@@ -126,18 +126,20 @@ def check_match_completion_from_api(match_id):
             data = resp.json()
             header = data.get('matchHeader', {})
 
-            # Better check: look for actual result/winner
-            # These fields only exist when match is truly complete
-            if header.get('result') or header.get('winner'):
-                logger.info(f'[API] Match {match_id} is COMPLETE - has result/winner')
-                return True
-
-            # Also check matchFormat and state more carefully
-            # Only "Match Complete" (not "Innings Break") means finished
+            # Debug: Log all key fields to see what API returns
             state = header.get('state', '').lower()
             status = header.get('status', '').lower()
+            result = header.get('result', '')
+            winner = header.get('winner', '')
+            match_status = header.get('matchStatus', '')
 
-            logger.debug(f'[API] Match {match_id} state="{state}" status="{status}"')
+            logger.info(f'[API] Match {match_id} - state="{state}" status="{status}" result="{result}" winner="{winner}" matchStatus="{match_status}"')
+
+            # Better check: look for actual result/winner
+            # These fields only exist when match is truly complete
+            if result or winner:
+                logger.info(f'[API] Match {match_id} is COMPLETE - has result/winner')
+                return True
 
             # Match is only complete if explicitly marked AND has result
             if 'match complete' in state or 'match complete' in status:
