@@ -115,41 +115,35 @@ def load_match_state():
 
 def check_match_completion_from_api(match_id):
     """
-    Check if match is complete from API response (checks both comm and livescore endpoints)
-    Returns True if match is complete, False otherwise
+    Check if match is ACTUALLY complete (not just innings break)
+    Returns True only if match has a winner/result
     """
     try:
-        # Check comm endpoint
+        # Check comm endpoint for actual match result
         url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
         resp = requests.get(url, headers=HEADERS, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             header = data.get('matchHeader', {})
 
-            # Check if match is marked as complete
-            if header.get('complete') == True:
-                logger.info(f'[API] Match {match_id} is COMPLETE (comm endpoint)')
+            # Better check: look for actual result/winner
+            # These fields only exist when match is truly complete
+            if header.get('result') or header.get('winner'):
+                logger.info(f'[API] Match {match_id} is COMPLETE - has result/winner')
                 return True
 
-            # Check state field
+            # Also check matchFormat and state more carefully
+            # Only "Match Complete" (not "Innings Break") means finished
             state = header.get('state', '').lower()
-            if state in ['complete', 'completed']:
-                logger.info(f'[API] Match {match_id} is COMPLETE (comm endpoint state)')
-                return True
+            status = header.get('status', '').lower()
 
-        # Also check livescore endpoint for state
-        url = f'https://www.cricbuzz.com/api/mcenter/livescore/{match_id}'
-        resp = requests.get(url, headers=HEADERS, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            miniscore = data.get('miniscore', {})
-            match_details = miniscore.get('matchScoreDetails', {})
+            logger.debug(f'[API] Match {match_id} state="{state}" status="{status}"')
 
-            # Check state from livescore
-            state = match_details.get('state', '').lower()
-            if state in ['complete', 'completed']:
-                logger.info(f'[API] Match {match_id} is COMPLETE (livescore state)')
-                return True
+            # Match is only complete if explicitly marked AND has result
+            if 'match complete' in state or 'match complete' in status:
+                if header.get('result') or header.get('winner'):
+                    logger.info(f'[API] Match {match_id} is COMPLETE (state confirms)')
+                    return True
 
         return False
     except Exception as e:
