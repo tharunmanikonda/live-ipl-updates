@@ -323,6 +323,14 @@ def auto_start_matches():
                                 matches_schedule[match_id]['status'] = 'live'
                                 save_match_schedule()  # ← Persist to disk
 
+                                # 🔗 AUTO-REGISTER WEBHOOK FOR THIS MATCH
+                                if match_id not in webhooks:
+                                    webhooks[match_id] = []
+                                if POKE_WEBHOOK_URL not in webhooks[match_id]:
+                                    webhooks[match_id].append(POKE_WEBHOOK_URL)
+                                    save_webhooks()
+                                    logger.info(f'[AUTO-START] 🔗 Auto-registered webhook for {match_id}')
+
                                 # 🚀 SEND MATCH START WEBHOOK
                                 send_webhook_event(match_id, 'match_start', {
                                     'match_title': match_details.get('match_title', ''),
