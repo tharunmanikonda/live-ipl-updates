@@ -116,36 +116,31 @@ def load_match_state():
 def check_match_completion_from_api(match_id):
     """
     Check if match is ACTUALLY complete (not just innings break)
-    Returns True only if match has a winner/result
+    Only returns True when state='match complete' AND result has actual data
     """
     try:
-        # Check comm endpoint for actual match result
         url = f'https://www.cricbuzz.com/api/mcenter/comm/{match_id}'
         resp = requests.get(url, headers=HEADERS, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             header = data.get('matchHeader', {})
+            miniscore = data.get('miniscore', {})
 
-            # Debug: Log all key fields to see what API returns
-            state = header.get('state', '').lower()
-            status = header.get('status', '').lower()
-            result = header.get('result', '')
-            winner = header.get('winner', '')
-            match_status = header.get('matchStatus', '')
+            # Get the actual state (check both sources)
+            state = (header.get('state', '') or miniscore.get('customStatus', '')).lower()
+            result = header.get('result', {})
 
-            logger.info(f'[API] Match {match_id} - state="{state}" status="{status}" result="{result}" winner="{winner}" matchStatus="{match_status}"')
+            logger.debug(f'[API] Match {match_id} - state="{state}" result_has_data={bool(result)}')
 
-            # Better check: look for actual result/winner
-            # These fields only exist when match is truly complete
-            if result or winner:
-                logger.info(f'[API] Match {match_id} is COMPLETE - has result/winner')
+            # Innings break = NOT complete, keep polling
+            if 'innings break' in state:
+                logger.debug(f'[API] Match {match_id} is in innings break - continue polling')
+                return False
+
+            # Match complete ONLY when state says "match complete" AND result exists
+            if 'match complete' in state and result and isinstance(result, dict) and len(result) > 0:
+                logger.info(f'[API] Match {match_id} is COMPLETE')
                 return True
-
-            # Match is only complete if explicitly marked AND has result
-            if 'match complete' in state or 'match complete' in status:
-                if header.get('result') or header.get('winner'):
-                    logger.info(f'[API] Match {match_id} is COMPLETE (state confirms)')
-                    return True
 
         return False
     except Exception as e:
