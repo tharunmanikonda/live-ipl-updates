@@ -539,6 +539,10 @@ def poll_live_matches():
             return  # No webhooks for live matches
 
         logger.info(f'[POLL] ✅ Polling {len(matches_to_poll)} match(es) with registered webhooks')
+        for mid in matches_to_poll:
+            match_info = matches_schedule.get(mid, {})
+            match_title = match_info.get('title', mid)
+            logger.info(f'[POLL] 📺 Match to poll: {mid} - {match_title}')
 
         # Update polling state
         with state_lock:
@@ -905,7 +909,10 @@ def poll_live_matches():
                         logger.info(f'[POLL] 🏏 OVER {over_separator.get("overNumber")} COMPLETED: {over_separator.get("overRuns")} runs (via API)')
 
                 # Process new balls and send webhooks for events
-                logger.info(f'[POLL] Processing {len(new_balls)} new balls for match {match_id}')
+                if len(new_balls) == 0:
+                    logger.info(f'[POLL] ℹ️  No new balls/events detected for {match_id} since last poll')
+                else:
+                    logger.info(f'[POLL] Processing {len(new_balls)} new balls for match {match_id}')
                 for ball in new_balls:
                     over_num = ball.get('ball', '')
                     over_number = ball.get('over_number')
